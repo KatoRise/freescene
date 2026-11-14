@@ -8,6 +8,7 @@ import io.flutter.plugin.common.MethodChannel
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.security.KeyStore
 import java.util.concurrent.Executors
@@ -24,7 +25,9 @@ object SourceProbe {
         val generation = epoch.get()
         val bytes = call.argument<ByteArray>("bytes")
         val magnet = call.argument<String>("magnet")
-        if ((bytes == null || bytes.size !in 1..16*1024*1024) && !TorrentPolicy.magnet(magnet)) {
+        if ((bytes == null && magnet == null) ||
+            (bytes != null && (bytes.size !in 1..16*1024*1024 || bytes[0] != 'd'.code.toByte())) ||
+            (magnet != null && !TorrentPolicy.magnet(magnet))) {
             result.success("unavailable"); return
         }
         worker.execute {
@@ -62,17 +65,18 @@ object SourceProbe {
                     if(file>=0) break
                     Thread.sleep(200)
                 }
-                if(file>=0 && generation==epoch.get()) {
+                if(file>=0 && generation==epoch.get() && System.nanoTime() < until) {
                     val url=command(JSONObject().put("method","stream").put("id",id).put("file",file)).getString("url")
                     val http=URL(url).openConnection() as HttpURLConnection
                     connection=http
                     http.connectTimeout=2000
                     http.readTimeout=((until-System.nanoTime())/1_000_000).coerceIn(1,20000).toInt()
                     http.setRequestProperty("Range","bytes=0-65535")
-                    if(http.responseCode==206) http.inputStream.use { if(it.read()>=0) status="data" }
+                    status = if(http.responseCode==206) http.inputStream.use { if(it.read()>=0) "data" else "unavailable" } else "unavailable"
                 }
                 if(generation != epoch.get()) status="cancelled"
-            } catch (_: Exception) { if(generation != epoch.get()) status="cancelled" }
+            } catch (_: SocketTimeoutException) { status = if(generation != epoch.get()) "cancelled" else "timeout" }
+            catch (_: Exception) { status = if(generation != epoch.get()) "cancelled" else "unavailable" }
             finally {
                 connection?.disconnect(); connection=null
                 if(handle!=0L) TorrentNative.destroy(handle)
