@@ -1,3 +1,5 @@
+import '../catalog/source_checks.dart';
+import 'source_probe.dart';
 import '../catalog/watched.dart';
 
 import 'dart:async';
@@ -214,6 +216,7 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
       preferences.providers.intersection(SourceProvider.values.toSet()),
     );
     catalog.addListener(_changed);
+    sourceCheckResults.addListener(_checksChanged);
     gridScroll.addListener(loadNearEnd);
     sourcesScroll.addListener(scheduleSourceLoad);
     unawaited(catalog.browse());
@@ -276,11 +279,20 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
     }
   }
 
+  late final sourceChecks = androidSourceChecks(widget.repository);
+
+  void _checksChanged() {
+    if (mounted) setState(() {});
+  }
+
   void _changed() {
     if (!mounted) return;
     setState(() {});
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && !modal && !playing) remote.repair();
+      if (mounted && !modal && !playing) {
+        remote.repair();
+        sourceChecks.select(catalog.selected?.id, filteredSources);
+      }
       loadNearEnd();
       loadSourcesNearEnd();
     });
@@ -293,6 +305,7 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
       remote.restore(remote.last);
       offerUpdate();
     }
+    if (state != AppLifecycleState.resumed) sourceChecks.stop();
     if (state == AppLifecycleState.paused && budget.lite) {
       PaintingBinding.instance.imageCache.clear();
     }
@@ -300,6 +313,8 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    sourceCheckResults.removeListener(_checksChanged);
+    sourceChecks.dispose();
     watched.dispose();
     ++playbackEpoch;
     trailerClient?.close();
@@ -588,6 +603,7 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
 
   Future<void> play(CatalogSource source) async {
     if (playing) return;
+    sourceChecks.stop();
     final epoch = ++playbackEpoch;
     final target = remote.last;
     final identity = watchedIdentity(catalog.selected, source);
@@ -1994,6 +2010,9 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
                     padding: const EdgeInsets.only(bottom: 8),
                     child: AndroidSourceCard(
                       source: source,
+                      onCheck: source.row.isTorrent && !playing
+                          ? () => sourceChecks.retry(source)
+                          : null,
                       title: title,
                       posterCache: widget.posterCache,
                       previewDecodeWidth: budget.posterWidth,

@@ -18,6 +18,7 @@ class AndroidSourceCard extends StatelessWidget {
     required this.series,
     required this.onPlay,
     this.onDownload,
+    this.onCheck,
     this.title,
     this.posterCache,
     this.previewDecodeWidth = 240,
@@ -27,7 +28,7 @@ class AndroidSourceCard extends StatelessWidget {
   final CatalogTitle? title;
   final RemoteFocus focus;
   final bool english, series;
-  final VoidCallback? onPlay, onDownload;
+  final VoidCallback? onPlay, onDownload, onCheck;
   final PosterDiskCache? posterCache;
   final int previewDecodeWidth;
   String tr(String ru, String en) => english ? en : ru;
@@ -136,6 +137,16 @@ class AndroidSourceCard extends StatelessWidget {
                   ),
                 ],
                 const SizedBox(width: 8),
+                if (onCheck != null)
+                  Tooltip(
+                    message: tr('Проверить источник', 'Check source'),
+                    child: RemoteButton(
+                      id: 'check-${row.provider.name}-${row.id}',
+                      focus: focus,
+                      onPressed: onCheck,
+                      child: const Icon(Icons.network_check, size: 22),
+                    ),
+                  ),
                 watchedButton,
               ],
             ),
@@ -243,6 +254,13 @@ class AndroidSourceCard extends StatelessWidget {
                       tr('Смотреть', 'Watch'),
                       onPlay,
                     ),
+                    if (onCheck != null)
+                      action(
+                        'check-${row.provider.name}-${row.id}',
+                        Icons.network_check,
+                        tr('Проверить', 'Check'),
+                        onCheck,
+                      ),
                     if (onDownload != null)
                       action(
                         'download-${row.provider.name}-${row.id}',

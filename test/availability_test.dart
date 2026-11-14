@@ -38,8 +38,7 @@ void main() {
     'availability retains exact counts and labels for accessibility',
     (tester) async {
       final semantics = tester.ensureSemantics();
-      const label =
-          'Доступность: 3/5 · Сиды: 10 · Пиры: 4\nОценка по данным провайдера';
+      const label = 'Каталог: сиды 10 · пиры 4\nПодключение не проверено';
       await tester.pumpWidget(
         const MaterialApp(
           home: Scaffold(
@@ -57,6 +56,8 @@ void main() {
           ),
         ),
       );
+      expect(find.textContaining('Подключение не проверено'), findsOneWidget);
+      expect(find.textContaining('/5'), findsNothing);
       expect(find.byTooltip(label), findsOneWidget);
       expect(find.bySemanticsLabel(label), findsOneWidget);
       expect(tester.takeException(), isNull);
