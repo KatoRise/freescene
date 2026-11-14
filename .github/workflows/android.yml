@@ -1,9 +1,9 @@
 name: Android and TV
 on:
   push:
-    paths: ['lib/**', 'packages/**', 'test/**', 'android/**', 'pubspec.*', 'tools/build_android*.py', 'tools/test_android.py', 'tools/android-audio-dependencies.json', 'native/**', '.github/workflows/android.yml']
+    paths: ['lib/**', 'packages/**', 'test/**', 'tests/native/**', 'android/**', 'pubspec.*', 'tools/build_android*.py', 'tools/test_android.py', 'tools/android-audio-dependencies.json', 'native/**', '.github/workflows/android.yml']
   pull_request:
-    paths: ['lib/**', 'packages/**', 'test/**', 'android/**', 'pubspec.*', 'tools/build_android*.py', 'tools/test_android.py', 'tools/android-audio-dependencies.json', 'native/**', '.github/workflows/android.yml']
+    paths: ['lib/**', 'packages/**', 'test/**', 'tests/native/**', 'android/**', 'pubspec.*', 'tools/build_android*.py', 'tools/test_android.py', 'tools/android-audio-dependencies.json', 'native/**', '.github/workflows/android.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -39,6 +39,10 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
+      - name: Test torrent read-ahead boundaries
+        run: |
+          c++ -std=c++17 -fsanitize=undefined -fno-sanitize-recover=all tests/native/stream_window.cpp -o /tmp/stream-window-test
+          /tmp/stream-window-test
       - run: python3 tools/build_android.py --flavor mobile --preview
       - run: python3 tools/test_android.py
       - run: python3 tools/build_android.py --flavor tv --preview
