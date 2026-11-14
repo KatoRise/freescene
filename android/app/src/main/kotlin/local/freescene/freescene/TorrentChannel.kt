@@ -25,19 +25,21 @@ class TorrentChannel(private val activity: Activity) {
                     TorrentEngine.add(activity, call.argument<ByteArray>("bytes"), call.argument<String>("magnet"), JSONObject(origin)) { value ->
                         value.onSuccess { task ->
                             val id = task.getString("id")
+                            val session = task.optLong("playbackSession", -1)
                             if (activity.isFinishing || activity.isDestroyed) {
-                                TorrentEngine.submit(activity, JSONObject().put("method", "closeStream").put("id", id))
+                                TorrentEngine.submit(activity, JSONObject().put("method", "closeStream").put("id", id).put("playbackSession", session))
                                 result.success(null)
                             } else try {
                                 PlayerColors.configure(activity, call.argument<Boolean>("playerDark") != false)
                                 activity.startActivity(Intent(activity, PlayerActivity::class.java).putExtra("torrentId", id)
+                                    .putExtra("playbackSession", session)
                                     .putExtra("title", call.argument<String>("title"))
                                 .putExtra("watchedSource", call.argument<String>("watchedSource"))
                                 .putExtra("watchedTitle", call.argument<String>("watchedTitle"))
                                 .putExtra("series", call.argument<Boolean>("series") ?: false))
                                 result.success(null)
                             } catch (failure: Exception) {
-                                TorrentEngine.submit(activity, JSONObject().put("method", "closeStream").put("id", id))
+                                TorrentEngine.submit(activity, JSONObject().put("method", "closeStream").put("id", id).put("playbackSession", session))
                                 result.error("torrent", failure.message, null)
                             }
                         }.onFailure { result.error("torrent", it.message, null) }

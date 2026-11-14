@@ -103,6 +103,7 @@ struct Task {
     int64_t previous_done = 0;
     std::map<int,std::pair<int,int>> windows;
     std::set<int> deadlines;
+    std::vector<lt::tcp::endpoint> playback_peers;
 };
 
 class Engine {
@@ -331,8 +332,27 @@ class Engine {
         }
         return {{"tasks", list}, {"persistenceError", persistence_error_}, {"port", port_}, {"listenPort", session_->listen_port()}, {"limits", limits_}};
     }
+    void remember_playback_peers(const std::shared_ptr<Task>& t) {
+        if (!stream_only_) return;
+        std::vector<lt::peer_info> peers;
+        t->handle.get_peer_info(peers);
+        std::vector<lt::tcp::endpoint> endpoints;
+        for (const auto& peer : peers) {
+            if (!(peer.flags & lt::peer_info::outgoing_connection) ||
+                (peer.flags & (lt::peer_info::connecting | lt::peer_info::handshake)) ||
+                (peer.connection_type & (lt::peer_info::web_seed | lt::peer_info::http_seed))) continue;
+            endpoints.push_back(peer.remote_endpoint());
+            if (endpoints.size() == 40) break;
+        }
+        if (!endpoints.empty()) t->playback_peers = std::move(endpoints);
+    }
     void update_window(const std::shared_ptr<Task>& t, int fd, int first, int last) {
         std::lock_guard lock(mutex_);
+        const bool restarting = first >= 0 && (t->windows.empty() ||
+            (stream_only_ && t->handle.status().is_finished));
+        // Preserve reachable endpoints before zero priorities mark this task
+        // finished and either side disconnects the now unneeded seed.
+        if (first < 0 && !t->removed) remember_playback_peers(t);
         if (first<0) t->windows.erase(fd); else t->windows[fd]={first,last};
         std::map<int,int> desired;
         for (auto& [client,range]:t->windows) for(int p=range.first;p<=range.second;++p) {
@@ -345,6 +365,11 @@ class Engine {
         }
         t->deadlines.clear();
         for(auto [p,delay]:desired) { t->handle.set_piece_deadline(lt::piece_index_t(p),delay); t->deadlines.insert(p); }
+        // Reintroduce peers only after the new deadlines restore download
+        // interest. Otherwise a completed selective stream can retain zero
+        // connection candidates even though known seeds have the next range.
+        if (stream_only_ && restarting && !t->paused)
+            for (const auto& peer : t->playback_peers) t->handle.connect_peer(peer);
     }
     void serve(int fd) {
         timeval timeout{2, 0};
@@ -453,7 +478,13 @@ public:
         settings.set_str(lt::settings_pack::dht_bootstrap_nodes, "dht.libtorrent.org:25401,dht.transmissionbt.com:6881,router.bittorrent.com:6881");
         // Keep metadata peers while the TV user is choosing an episode. Zero
         // file priorities otherwise make libtorrent disconnect seed peers.
-        if (stream_only_) settings.set_bool(lt::settings_pack::close_redundant_connections, false);
+        if (stream_only_) {
+            settings.set_bool(lt::settings_pack::close_redundant_connections, false);
+            // The default 60-second reconnect cooldown also applies after an
+            // intentional pause. A TV returning to a retained stream must be
+            // able to reuse known peers before the player's HTTP read times out.
+            settings.set_int(lt::settings_pack::min_reconnect_time, 5);
+        }
         settings.set_int(lt::settings_pack::active_downloads, 3);
         settings.set_int(lt::settings_pack::active_limit, 6);
         if (lite) {
@@ -563,7 +594,7 @@ public:
         auto t=task(args.at("id"));
         if (method=="pause" || method=="resume") {
             t->paused=method=="pause"; t->started=t->advanced=Clock::now(); t->event.clear(); t->problem.clear();
-            if (t->paused) { t->handle.unset_flags(lt::torrent_flags::auto_managed); t->handle.pause(); }
+            if (t->paused) { remember_playback_peers(t); t->handle.unset_flags(lt::torrent_flags::auto_managed); t->handle.pause(); }
             else { t->handle.set_flags(lt::torrent_flags::auto_managed); t->handle.clear_error(); t->handle.resume(); }
             save_manifest(); t->handle.save_resume_data(lt::torrent_handle::save_info_dict); return {{"ok",true}};
         }
