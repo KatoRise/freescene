@@ -19,12 +19,21 @@ class AndroidSourceCard extends StatelessWidget {
     required this.onPlay,
     this.onDownload,
     this.onCheck,
+    this.displayTitle,
+    this.actionId,
+    this.onAlternatives,
+    this.alternativesCount = 0,
+    this.expanded = false,
     this.title,
     this.posterCache,
     this.previewDecodeWidth = 240,
     super.key,
   });
   final CatalogSource source;
+  final String? displayTitle, actionId;
+  final VoidCallback? onAlternatives;
+  final int alternativesCount;
+  final bool expanded;
   final CatalogTitle? title;
   final RemoteFocus focus;
   final bool english, series;
@@ -58,6 +67,7 @@ class AndroidSourceCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final row = source.row;
+    final identity = actionId ?? '${row.provider.name}-${row.id}';
     final colors = Theme.of(context).colorScheme;
     final watched = WatchedScope.of(context);
     final marked =
@@ -65,7 +75,7 @@ class AndroidSourceCard extends StatelessWidget {
     final watchedButton = Tooltip(
       message: tr('Просмотрено', 'Watched'),
       child: RemoteButton(
-        id: 'watched-${row.provider.name}-${row.id}',
+        id: 'watched-$identity',
         focus: focus,
         radius: 24,
         selected: marked,
@@ -96,8 +106,8 @@ class AndroidSourceCard extends StatelessWidget {
     if (focus.enabled) {
       return OverflowTooltip(
         child: RemoteButton(
-          key: ValueKey('source-card-${row.provider.name}-${row.id}'),
-          id: 'source-${row.provider.name}-${row.id}',
+          key: ValueKey('source-card-$identity'),
+          id: 'source-$identity',
           focus: focus,
           onPressed: onPlay,
           alignment: Alignment.centerLeft,
@@ -107,7 +117,7 @@ class AndroidSourceCard extends StatelessWidget {
               children: [
                 Expanded(
                   child: TruncatedText(
-                    row.title,
+                    displayTitle ?? row.title,
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                 ),
@@ -130,9 +140,7 @@ class AndroidSourceCard extends StatelessWidget {
                           ? ''
                           : sourceEpisodeDisplay(source),
                       tooltipOrder: 1,
-                      textKey: ValueKey(
-                        'source-episode-${row.provider.name}-${row.id}',
-                      ),
+                      textKey: ValueKey('source-episode-$identity'),
                     ),
                   ),
                 ],
@@ -141,10 +149,29 @@ class AndroidSourceCard extends StatelessWidget {
                   Tooltip(
                     message: tr('Проверить источник', 'Check source'),
                     child: RemoteButton(
-                      id: 'check-${row.provider.name}-${row.id}',
+                      id: 'check-$identity',
                       focus: focus,
                       onPressed: onCheck,
                       child: const Icon(Icons.network_check, size: 22),
+                    ),
+                  ),
+                if (onAlternatives != null)
+                  Tooltip(
+                    message: tr('Другие источники', 'Other sources'),
+                    child: RemoteButton(
+                      id: 'alternatives-$identity',
+                      focus: focus,
+                      onPressed: onAlternatives,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text('$alternativesCount'),
+                          Icon(
+                            expanded ? Icons.expand_less : Icons.expand_more,
+                            size: 20,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 watchedButton,
@@ -171,7 +198,7 @@ class AndroidSourceCard extends StatelessWidget {
       ),
     );
     return Container(
-      key: ValueKey('source-card-${row.provider.name}-${row.id}'),
+      key: ValueKey('source-card-$identity'),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: colors.surfaceContainerLow,
@@ -188,14 +215,18 @@ class AndroidSourceCard extends StatelessWidget {
                 children: [
                   Tooltip(
                     message: row.title,
-                    child: Text(
-                      row.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    child: InkWell(
+                      onTap: displayTitle == null ? null : onPlay,
+                      child: Text(
+                        displayTitle ?? row.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
                     ),
                   ),
-                  if (source.channel != null || source.audio != null)
+                  if (displayTitle == null &&
+                      (source.channel != null || source.audio != null))
                     Text(
                       [
                         source.channel,
@@ -249,21 +280,31 @@ class AndroidSourceCard extends StatelessWidget {
                   runSpacing: 6,
                   children: [
                     action(
-                      'source-${row.provider.name}-${row.id}',
+                      'source-$identity',
                       Icons.play_arrow,
                       tr('Смотреть', 'Watch'),
                       onPlay,
                     ),
                     if (onCheck != null)
                       action(
-                        'check-${row.provider.name}-${row.id}',
+                        'check-$identity',
                         Icons.network_check,
                         tr('Проверить', 'Check'),
                         onCheck,
                       ),
+                    if (onAlternatives != null)
+                      action(
+                        'alternatives-$identity',
+                        expanded ? Icons.expand_less : Icons.expand_more,
+                        tr(
+                          'Источники ($alternativesCount)',
+                          'Sources ($alternativesCount)',
+                        ),
+                        onAlternatives,
+                      ),
                     if (onDownload != null)
                       action(
-                        'download-${row.provider.name}-${row.id}',
+                        'download-$identity',
                         Icons.download_outlined,
                         tr('Скачать', 'Download'),
                         onDownload,
