@@ -10,7 +10,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.security.KeyStore
+import java.security.MessageDigest
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 @Keep
 object TorrentNative {
@@ -22,17 +24,25 @@ object TorrentNative {
 
 /** One serialized native session for both Flutter and the platform player. */
 object TorrentEngine {
-    private val worker = Executors.newSingleThreadExecutor()
+    private val worker = Executors.newSingleThreadScheduledExecutor()
     private val main = Handler(Looper.getMainLooper())
     private var handle = 0L
-    private var tvTask: String? = null
+    private var tvSession: TvTorrentSession? = null
     private fun tvCache(context: Context) = File(context.cacheDir, "torrent-playback")
     private fun closeTvStream(context: Context) {
         if (handle != 0L) TorrentNative.destroy(handle)
-        handle = 0L; tvTask = null
+        handle = 0L
         synchronized(streams) { streams.clear() }
         tvCache(context).deleteRecursively()
     }
+    private fun tvSession(context: Context): TvTorrentSession = tvSession ?: TvTorrentSession(
+        dispose = { closeTvStream(context) },
+        scheduleExpiry = { action ->
+            val pending = worker.schedule({ action() }, 2, TimeUnit.MINUTES)
+            val cancel: () -> Unit = { pending.cancel(false) }
+            cancel
+        },
+    ).also { tvSession = it }
     private val streams = mutableSetOf<String>()
     private fun initialize(context: Context) {
         if (handle != 0L) return
@@ -64,10 +74,17 @@ object TorrentEngine {
         val app = context.applicationContext
         worker.execute {
             val result = runCatching {
-                if (args.optString("method") == "closeStream") {
-                    if (TvWindow.isTv(app) && tvTask == args.optString("id")) closeTvStream(app)
+                val tv = TvWindow.isTv(app)
+                val method = args.optString("method")
+                val current = !tv || tvSession(app).owns(args.optString("id"), args.optLong("playbackSession", -1))
+                if (method == "closeStream") {
+                    if (tv && current) {
+                        command(JSONObject().put("method", "pause").put("id", args.getString("id")))
+                        tvSession(app).release(args.getString("id"), args.getLong("playbackSession"))
+                    }
                     return@runCatching JSONObject().put("ok", true)
                 }
+                check(current) { "Сеанс воспроизведения уже закрыт" }
                 initialize(app)
                 val response = command(args)
                 if (args.optString("method") == "stream") synchronized(streams) { streams.add(response.getString("url")) }
@@ -80,22 +97,32 @@ object TorrentEngine {
         val app = context.applicationContext
         worker.execute {
             var temp: File? = null
+            var prepared = false
             val result = runCatching {
                 require(bytes != null || TorrentPolicy.magnet(magnet)) { "Нужна magnet-ссылка или .torrent" }
-                if (TvWindow.isTv(app) && tvTask != null) closeTvStream(app)
+                if (bytes != null) require(bytes.size in 1..16 * 1024 * 1024 && bytes[0] == 'd'.code.toByte()) { "Некорректный .torrent" }
+                if (magnet != null) require(TorrentPolicy.magnet(magnet))
+                val tv = TvWindow.isTv(app)
+                if (tv) {
+                    // Providers can supply a stable magnet alongside refreshed metadata.
+                    // Native add still validates expectedMagnet before reusing a task.
+                    val source = magnet ?: MessageDigest.getInstance("SHA-256").digest(bytes!!)
+                        .joinToString("") { "%02x".format(it) }
+                    tvSession(app).prepare(source)
+                    prepared = true
+                }
                 initialize(app)
                 val args = JSONObject().put("method", "add").put("origin", origin)
                 if (bytes != null) {
-                    require(bytes.size in 1..16 * 1024 * 1024 && bytes[0] == 'd'.code.toByte()) { "Некорректный .torrent" }
                     temp = File.createTempFile("import-", ".torrent", app.cacheDir).apply { writeBytes(bytes) }
                     args.put("source", temp!!.path)
-                    if (magnet != null) { require(TorrentPolicy.magnet(magnet)); args.put("expectedMagnet", magnet) }
+                    if (magnet != null) args.put("expectedMagnet", magnet)
                 } else args.put("source", magnet)
                 command(args).also { result ->
-                    if (TvWindow.isTv(app)) tvTask = result.getString("id")
-                    if (result.optBoolean("duplicate")) command(JSONObject().put("method", "resume").put("id", result.getString("id")))
+                    if (tv) result.put("playbackSession", tvSession(app).opened(result.getString("id")))
+                    if (!tv && result.optBoolean("duplicate")) command(JSONObject().put("method", "resume").put("id", result.getString("id")))
                 }
-            }
+            }.onFailure { if (prepared) tvSession(app).abort() }
             temp?.delete()
             main.post { callback(result) }
         }

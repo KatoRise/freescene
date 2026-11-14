@@ -93,6 +93,7 @@ open class PlayerActivity : Activity() {
     private var audioWarning: String? = null
     private lateinit var episodes: ImageButton
     protected open fun request(method: String, extra: JSONObject = JSONObject(), callback: (Result<JSONObject>) -> Unit = {}) {
+        if (intent.hasExtra("playbackSession")) extra.put("playbackSession", intent.getLongExtra("playbackSession", -1))
         TorrentEngine.submit(this, extra.put("method", method).put("id", torrentId), callback)
     }
     private val poll = object : Runnable {
