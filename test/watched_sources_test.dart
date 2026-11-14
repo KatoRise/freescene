@@ -158,7 +158,11 @@ void main() {
       expect(find.byKey(ValueKey('bubble-$type')), findsNothing);
     }
     expect(find.byKey(const ValueKey('bubble-availability')), findsOneWidget);
-    expect(find.textContaining('Connection not checked'), findsOneWidget);
+    expect(find.byIcon(Icons.help_outline), findsOneWidget);
+    expect(
+      find.byTooltip('Catalogue: seeds — · peers —\nConnection not checked'),
+      findsOneWidget,
+    );
     expect(find.text('—'), findsNothing);
   });
 }

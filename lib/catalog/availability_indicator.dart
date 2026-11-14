@@ -40,12 +40,38 @@ class AvailabilityIndicator extends StatelessWidget {
       null => english ? 'Connection not checked' : 'Подключение не проверено',
     };
     final label = '$summary\n$status';
+    final compactCounts = [
+      if (counts.seeds != null) '${english ? 'S' : 'С'} ${counts.seedsLabel}',
+      if (counts.peers != null) '${english ? 'P' : 'П'} ${counts.peersLabel}',
+    ].join(' · ');
+    final icon = switch (state) {
+      SourceCheckState.checking => Icons.hourglass_top,
+      SourceCheckState.data => Icons.check_circle_outline,
+      SourceCheckState.timeout => Icons.schedule,
+      SourceCheckState.unavailable => Icons.error_outline,
+      null => Icons.help_outline,
+    };
     return Tooltip(
       message: label,
       excludeFromSemantics: true,
       child: Semantics(
         label: label,
-        child: ExcludeSemantics(child: Text('$summary · $status')),
+        child: ExcludeSemantics(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (compactCounts.isNotEmpty) ...[
+                Text(compactCounts),
+                const SizedBox(width: 6),
+              ],
+              Icon(
+                icon,
+                size: 16,
+                color: DefaultTextStyle.of(context).style.color,
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
