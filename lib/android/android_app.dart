@@ -32,7 +32,7 @@ import 'android_voice_dialog.dart';
 import 'android_theme.dart';
 import 'android_updates.dart';
 import 'remote_focus.dart';
-import 'source_card.dart';
+import 'source_picker.dart';
 
 class AndroidBootstrap extends StatefulWidget {
   const AndroidBootstrap({super.key});
@@ -291,7 +291,6 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && !modal && !playing) {
         remote.repair();
-        sourceChecks.select(catalog.selected?.id, filteredSources);
       }
       loadNearEnd();
       loadSourcesNearEnd();
@@ -2002,30 +2001,25 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
                           : 'No matching results.',
                     ),
                   ),
-                for (final source in visible)
-                  Padding(
-                    key: ValueKey(
-                      'source-row-${source.row.provider.name}-${source.row.id}',
-                    ),
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: AndroidSourceCard(
-                      source: source,
-                      onCheck: source.row.isTorrent && !playing
-                          ? () => sourceChecks.retry(source)
-                          : null,
-                      title: title,
-                      posterCache: widget.posterCache,
-                      previewDecodeWidth: budget.posterWidth,
-                      focus: remote,
-                      english: preferences.english,
-                      series: title.kind == CatalogKind.series,
-                      onDownload: !widget.runtime.tv && source.row.isTorrent
-                          ? () => unawaited(downloadSource(source))
-                          : null,
-                      onPlay: source.canWatch
-                          ? () => unawaited(play(source))
-                          : null,
-                    ),
+                if (filteredSources.isNotEmpty)
+                  AndroidSourcePicker(
+                    key: ValueKey('picker-${title.kind.name}-${title.id}'),
+                    title: title,
+                    sources: filteredSources,
+                    focus: remote,
+                    english: preferences.english,
+                    enabled: !playing,
+                    limit: sourceLimit,
+                    posterCache: widget.posterCache,
+                    previewDecodeWidth: budget.posterWidth,
+                    onCandidates: (scope, candidates) =>
+                        sourceChecks.select(scope, candidates),
+                    onCheck: sourceChecks.retry,
+                    onStop: sourceChecks.stop,
+                    onPlay: (source) => unawaited(play(source)),
+                    onDownload: widget.runtime.tv
+                        ? null
+                        : (source) => unawaited(downloadSource(source)),
                   ),
                 Wrap(
                   spacing: 8,
