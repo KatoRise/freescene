@@ -1,5 +1,6 @@
 package local.freescene.freescene
 
+import android.util.Log
 import android.app.ActivityManager
 import android.content.Context
 import android.os.Environment
@@ -26,12 +27,16 @@ object TorrentEngine {
     private val main = Handler(Looper.getMainLooper())
     private var handle = 0L
     private var tvTask: String? = null
+    private fun appNetwork(context: Context) = File(context.filesDir, "torrent-network")
     private fun tvCache(context: Context) = File(context.cacheDir, "torrent-playback")
+    private fun tvLaunch(context: Context) = TvPlaybackLaunch(File(context.filesDir, "torrent-launch"))
     private fun closeTvStream(context: Context) {
+        Log.i("FreeSceneSession", "close task=$tvTask handle=$handle")
         if (handle != 0L) TorrentNative.destroy(handle)
         handle = 0L; tvTask = null
         synchronized(streams) { streams.clear() }
         tvCache(context).deleteRecursively()
+        tvLaunch(context).clear()
     }
     private val streams = mutableSetOf<String>()
     private fun initialize(context: Context) {
@@ -52,23 +57,44 @@ object TorrentEngine {
         })
         val lite = TvWindow.isTv(context) || (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).isLowRamDevice
         handle = TorrentNative.create(JSONObject().put("profile", profile.path).put("downloads", downloads.path)
-            .put("lite", lite).put("streamOnly", tv).put("pauseOnRestore", true).put("caBundle", ca.path).toString())
+            .put("networkState", File(appNetwork(context), "dht.state").path).put("diagnostics", Log.isLoggable("FreeSceneTrace", Log.INFO)).put("lite", lite).put("streamOnly", tv).put("pauseOnRestore", true).put("caBundle", ca.path).toString())
+        Log.i("FreeSceneSession", "initialize handle=$handle")
         if (handle == 0L) throw IllegalStateException("Не удалось запустить торрент-движок")
     }
     private fun command(args: JSONObject): JSONObject {
         val reply = JSONObject(TorrentNative.command(handle, args.toString()))
-        if (reply.has("error")) throw IllegalStateException(reply.getString("error"))
+        if (reply.has("error")) {
+            Log.e("FreeSceneSession", "command=${args.optString("method")} id=${args.optString("id")} active=$tvTask handle=$handle error=${reply.getString("error")}")
+            throw IllegalStateException(reply.getString("error"))
+        }
         return reply.getJSONObject("result")
     }
     fun submit(context: Context, args: JSONObject, callback: (Result<JSONObject>) -> Unit = {}) {
         val app = context.applicationContext
         worker.execute {
             val result = runCatching {
-                if (args.optString("method") == "closeStream") {
-                    if (TvWindow.isTv(app) && tvTask == args.optString("id")) closeTvStream(app)
+                val method = args.optString("method")
+                val id = args.optString("id")
+                val token = args.optString("playbackToken")
+                val tv = TvWindow.isTv(app)
+                if (method == "closeStream") {
+                    if (tv && tvLaunch(app).owns(id, token)) closeTvStream(app)
                     return@runCatching JSONObject().put("ok", true)
                 }
+                if (tv && !tvLaunch(app).owns(id, token)) {
+                    // Late lifecycle callbacks from an old Activity must not pause its replacement.
+                    if (method == "pause" || method == "streamPaused") return@runCatching JSONObject().put("ok", true)
+                    error("Сеанс просмотра завершён. Вернитесь к источникам и выберите фильм снова.")
+                }
                 initialize(app)
+                if (tv && method == "prepareStream") {
+                    val restored = tvLaunch(app).prepare(id, token, hasTask = {
+                        val tasks = command(JSONObject().put("method", "status")).getJSONArray("tasks")
+                        (0 until tasks.length()).any { tasks.getJSONObject(it).optString("id") == id }
+                    }, add = { command(it).getString("id") })
+                    tvTask = id
+                    if (restored) Log.w("FreeSceneSession", "Restored selected torrent after native session loss")
+                }
                 val response = command(args)
                 if (args.optString("method") == "stream") synchronized(streams) { streams.add(response.getString("url")) }
                 response
@@ -92,7 +118,11 @@ object TorrentEngine {
                     if (magnet != null) { require(TorrentPolicy.magnet(magnet)); args.put("expectedMagnet", magnet) }
                 } else args.put("source", magnet)
                 command(args).also { result ->
-                    if (TvWindow.isTv(app)) tvTask = result.getString("id")
+                    if (TvWindow.isTv(app)) {
+                        tvTask = result.getString("id")
+                        result.put("playbackToken", tvLaunch(app).remember(tvTask!!, bytes, magnet, origin))
+                    }
+                    Log.i("FreeSceneSession", "add id=${result.getString("id")} handle=$handle")
                     if (result.optBoolean("duplicate")) command(JSONObject().put("method", "resume").put("id", result.getString("id")))
                 }
             }
