@@ -1,5 +1,6 @@
 #include "engine.h"
 #include "range.h"
+#include "stream_window.h"
 #include <libtorrent/session.hpp>
 #include <libtorrent/session_params.hpp>
 #include <libtorrent/settings_pack.hpp>
@@ -60,6 +61,14 @@ void atomic_file(const fs::path& path, const std::string& contents) {
     if (!output) throw std::runtime_error("Cannot save torrent session");
     fs::rename(temp, path);
 }
+std::string tracker_host(const char* url) {
+    // Never record passkeys, URL paths, or userinfo in diagnostics.
+    std::string value=url ? url : "";
+    auto start=value.find("://"); if(start==std::string::npos) return "unknown";
+    auto end=value.find('/',start+3); auto authority=value.substr(start+3,end-(start+3));
+    auto user=authority.rfind('@'); if(user!=std::string::npos) authority.erase(0,user+1);
+    return value.substr(0,start)+"://"+authority;
+}
 std::string hash_id(const lt::info_hash_t& hashes) {
     std::ostringstream stream;
     if (hashes.has_v2()) stream << hashes.v2; else stream << hashes.v1;
@@ -104,10 +113,12 @@ struct Task {
     std::map<int,std::pair<int,int>> windows;
     std::set<int> deadlines;
     std::vector<lt::tcp::endpoint> playback_peers;
+    struct Warmup { int file, first, last; Clock::time_point expires; };
+    std::optional<Warmup> warmup;
 };
 
 class Engine {
-    fs::path profile_, downloads_;
+    fs::path profile_, downloads_, network_state_;
     OwnedFD profile_lock_;
     OwnedFD listener_;
     int port_ = 0;
@@ -126,8 +137,31 @@ class Engine {
     std::string persistence_error_, dht_error_;
     bool isolated_ = false, dht_bootstrapped_ = false, stream_only_ = false;
     size_t piece_cache_bytes_ = 32 * 1024 * 1024;
+    bool diagnostics_ = false;
+    std::mutex trace_mutex_;
+    std::ofstream trace_file_;
+    Clock::time_point trace_started_ = Clock::now();
+    std::atomic<int> request_sequence_{0};
+    void trace(json event) noexcept {
+        if (!diagnostics_) return;
+        try {
+            event["ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now()-trace_started_).count();
+            std::lock_guard lock(trace_mutex_);
+            if (trace_file_.tellp() < 4*1024*1024) { trace_file_ << event.dump() << '\n'; trace_file_.flush(); }
+        } catch (...) {} // Diagnostics must never affect streaming.
+    }
     json limits_ = {{"download",0},{"upload",0},{"active",3}};
 
+    void save_network_state() noexcept {
+        if (network_state_.empty() || isolated_) return;
+        try {
+            const auto flags=lt::session_handle::save_dht_state;
+            auto state=session_->session_state(flags);
+            auto bytes=lt::write_session_params_buf(state,flags);
+            fs::create_directories(network_state_.parent_path());
+            atomic_file(network_state_,{bytes.data(),bytes.size()});
+        } catch (...) {} // An optional routing cache must not fail playback.
+    }
     void save_manifest() {
         json list = json::array();
         for (auto& [id, t] : tasks_) list.push_back({{"id", id}, {"source", t->source}, {"origin", t->origin}, {"paused", t->paused}});
@@ -140,6 +174,16 @@ class Engine {
         std::vector<lt::alert*> alerts;
         session_->pop_alerts(&alerts);
         for (auto* alert : alerts) {
+            if (diagnostics_) {
+                if (auto* a=lt::alert_cast<lt::tracker_reply_alert>(alert)) trace({{"event","tracker_reply"},{"host",tracker_host(a->tracker_url())},{"peers",a->num_peers}});
+                if (auto* a=lt::alert_cast<lt::tracker_error_alert>(alert)) trace({{"event","tracker_error"},{"host",tracker_host(a->tracker_url())},{"error",a->error.message()}});
+                if (auto* a=lt::alert_cast<lt::tracker_announce_alert>(alert)) trace({{"event","tracker_announce"},{"host",tracker_host(a->tracker_url())}});
+                if (auto* a=lt::alert_cast<lt::dht_get_peers_reply_alert>(alert)) trace({{"event","dht_peers"},{"peers",a->num_peers()}});
+                if (lt::alert_cast<lt::dht_bootstrap_alert>(alert)) trace({{"event","dht_bootstrapped"}});
+                if (auto* a=lt::alert_cast<lt::peer_disconnected_alert>(alert)) trace({{"event","peer_disconnected"},{"socket",int(a->socket_type)},{"error",a->error.message()}});
+                if (auto* a=lt::alert_cast<lt::peer_connect_alert>(alert)) trace({{"event","peer_connect"},{"socket",int(a->socket_type)}});
+                if (auto* a=lt::alert_cast<lt::piece_finished_alert>(alert)) trace({{"event","piece_finished"},{"piece",int(a->piece_index)}});
+            }
             if (auto* read = lt::alert_cast<lt::read_piece_alert>(alert)) {
                 auto id=task_id(read->handle);
                 auto it=reads_.find({id,int(read->piece)});
@@ -359,6 +403,11 @@ class Engine {
             int delay=(p-range.first)*150;
             auto it=desired.find(p); if(it==desired.end() || delay<it->second) desired[p]=delay;
         }
+        if (t->warmup && Clock::now() >= t->warmup->expires) t->warmup.reset();
+        if (t->warmup) for (int p=t->warmup->first;p<=t->warmup->last;++p) {
+            const int delay=(p-t->warmup->first)*150;
+            auto it=desired.find(p); if(it==desired.end() || delay<it->second) desired[p]=delay;
+        }
         for(int p:t->deadlines) if(!desired.count(p)) {
             t->handle.reset_piece_deadline(lt::piece_index_t(p));
             if (stream_only_) t->handle.piece_priority(lt::piece_index_t(p), lt::dont_download);
@@ -407,6 +456,8 @@ class Engine {
         }
         ByteRange r;
         try { r = parse_range(range, size); } catch (...) { response(fd,416,"Content-Range: bytes */" + std::to_string(size) + "\r\n"); return; }
+        const int request_id=++request_sequence_;
+        trace({{"event","http_request"},{"request",request_id},{"first",r.first},{"last",r.last}});
         auto base = downloads_ / t->id;
         auto file = fs::weakly_canonical(base / files.file_path(index));
         auto relative = file.lexically_relative(fs::weakly_canonical(base));
@@ -416,10 +467,20 @@ class Engine {
         if (r.partial) head += "Content-Range: bytes " + std::to_string(r.first) + "-" + std::to_string(r.last) + "/" + std::to_string(size) + "\r\n";
         head += "\r\n";
         if (method == "HEAD") { send_bytes(fd,head.data(),head.size()); return; }
-        auto cleanup = [this,t,fd](int*) { try { update_window(t,fd,-1,-1); } catch (...) {} };
+        auto cleanup = [this,t,fd,request_id](int*) { trace({{"event","http_close"},{"request",request_id}}); try { update_window(t,fd,-1,-1); } catch (...) {} };
         std::unique_ptr<int,decltype(cleanup)> window_guard(reinterpret_cast<int*>(1),cleanup);
-        int previous_piece=-1;
+        // Matroska reads Cues at EOF before returning to the opening cluster.
+        // Retain startup read-ahead across that short index request. Short source
+        // probes never create this reservation; real seeks discard it.
+        const bool index_tail = size-r.first <= 1024*1024 && r.last==size-1;
+        const bool opening_mkv = stream_only_ && r.first==0 && r.last==size-1 && fs::path(files.file_path(index)).extension()==".mkv";
+        const int seek_end = stream_only_ ? stream_seek_window_end(files.file_offset(index), r.first, r.last, info->piece_length()) : -1;
+        bool warmup_started=false;
+        int previous_piece=-1, previous_end=-1;
         bool headers_sent = false;
+        bool startup_prefetch = false;
+        auto next_progress_check = Clock::now();
+        auto next_trace = Clock::now();
         auto last_data = Clock::now();
         int64_t cursor = r.first;
         while (cursor <= r.last && !stopping_) {
@@ -430,10 +491,48 @@ class Engine {
             }
             auto offset = files.file_offset(index) + cursor;
             int piece = int(offset / info->piece_length());
-            const int file_end = int((files.file_offset(index) + size - 1) / info->piece_length());
-            int end = std::min(file_end, piece + std::max(2, 8*1024*1024 / info->piece_length()));
-            if (piece != previous_piece) { update_window(t,fd,piece,end); previous_piece=piece; }
-            if (!t->handle.have_piece(lt::piece_index_t(piece))) {
+            const int range_end = int((files.file_offset(index) + r.last) / info->piece_length());
+            const bool verified = t->handle.have_piece(lt::piece_index_t(piece));
+            bool warmup_changed=false;
+            {
+                std::lock_guard lock(mutex_);
+                if(t->warmup && (t->warmup->file!=int(index) || (!index_tail && piece>t->warmup->first) || Clock::now()>=t->warmup->expires)) {
+                    trace({{"event","warmup_end"},{"request",request_id}});
+                    t->warmup.reset(); warmup_changed=true;
+                }
+                if(opening_mkv && !warmup_started && !headers_sent && verified) {
+                    t->warmup=Task::Warmup{int(index),piece,stream_window_end(piece,range_end,info->piece_length(),true),Clock::now()+90s};
+                    warmup_started=true; warmup_changed=true;
+                    trace({{"event","warmup_begin"},{"first",piece},{"last",t->warmup->last}});
+                }
+            }
+            if (diagnostics_ && Clock::now() >= next_trace) {
+                auto status=t->handle.status();
+                std::vector<lt::peer_info> peers; t->handle.get_peer_info(peers);
+                json connections=json::array();
+                for (const auto& peer:peers) if (!(peer.flags & (lt::peer_info::connecting | lt::peer_info::handshake)))
+                    connections.push_back({{"interesting",bool(peer.flags & lt::peer_info::interesting)},{"choked",bool(peer.flags & lt::peer_info::remote_choked)},{"source",int(static_cast<unsigned char>(peer.source))},{"rate",peer.down_speed}});
+                std::vector<lt::partial_piece_info> queue; t->handle.get_download_queue(queue);
+                json progress=json::array();
+                for (auto& q:queue) progress.push_back({{"piece",int(q.piece_index)},{"blocks",q.blocks_in_piece},{"finished",q.finished},{"writing",q.writing},{"requested",q.requested}});
+                trace({{"event","http_progress"},{"request",request_id},{"cursor",cursor},{"piece",piece},{"verified",verified},{"peers",status.num_peers},{"knownPeers",status.list_peers},{"candidates",status.connect_candidates},{"connections",status.num_connections},{"paused",bool(status.flags & lt::torrent_flags::paused)},{"priority",int(static_cast<unsigned char>(t->handle.piece_priority(lt::piece_index_t(piece))))},{"wanted",status.total_wanted},{"peerStates",connections},{"seeds",status.num_seeds},{"rate",status.download_payload_rate},{"downloaded",status.total_payload_download},{"queue",progress}});
+                next_trace=Clock::now()+1s;
+            }
+            if (!startup_prefetch && !verified && range_end > piece && Clock::now() >= next_progress_check) {
+                std::vector<lt::partial_piece_info> queue;
+                t->handle.get_download_queue(queue);
+                for (const auto& progress : queue) if (int(progress.piece_index) == piece) {
+                    startup_prefetch = stream_prefetch_ready(progress.blocks_in_piece, progress.finished, progress.writing);
+                    break;
+                }
+                next_progress_check = Clock::now() + 250ms;
+            }
+            const int end = std::max(seek_end, stream_window_end(piece, range_end, info->piece_length(), headers_sent || verified || startup_prefetch));
+            if (piece != previous_piece || end != previous_end || warmup_changed) {
+                trace({{"event","window"},{"request",request_id},{"first",piece},{"last",end}});
+                update_window(t,fd,piece,end); previous_piece=piece; previous_end=end;
+            }
+            if (!verified) {
                 if (Clock::now() - last_data > (headers_sent ? 45s : 90s)) {
                     {
                         std::lock_guard lock(mutex_);
@@ -458,7 +557,7 @@ class Engine {
             auto within=size_t(offset % info->piece_length());
             if(within>=buffer->size()) { if(!headers_sent) response(fd,500); return; }
             auto length = size_t(std::min({r.last-cursor+1, int64_t(buffer->size()-within), int64_t(262144)}));
-            if (!headers_sent) { if (!send_bytes(fd,head.data(),head.size())) return; headers_sent = true; }
+            if (!headers_sent) { trace({{"event","http_first_byte"},{"request",request_id},{"piece",piece}}); if (!send_bytes(fd,head.data(),head.size())) return; headers_sent = true; }
             if (!send_bytes(fd,buffer->data()+within,length,&stopping_)) return;
             cursor += length; last_data = Clock::now();
         }
@@ -468,6 +567,9 @@ public:
         fs::create_directories(profile_); fs::create_directories(downloads_);
         profile_lock_ = ::open((profile_ / "engine.lock").c_str(), O_CREAT | O_RDWR, 0600);
         if (profile_lock_ < 0 || flock(profile_lock_,LOCK_EX | LOCK_NB)) throw std::runtime_error("FreeScene profile is already open");
+        diagnostics_=config.value("diagnostics",false);
+        if(diagnostics_) trace_file_.open(profile_/"stream-trace.jsonl", std::ios::trunc);
+        trace({{"event","initialize"}});
         const bool lite = config.value("lite", false);
         stream_only_ = config.value("streamOnly", false);
         piece_cache_bytes_ = (lite ? 16 : 32) * 1024 * 1024;
@@ -484,6 +586,9 @@ public:
             // intentional pause. A TV returning to a retained stream must be
             // able to reuse known peers before the player's HTTP read times out.
             settings.set_int(lt::settings_pack::min_reconnect_time, 5);
+            // A slow/dead tier must not block discovery on the other trackers
+            // already supplied by the torrent. No external trackers are added.
+            settings.set_bool(lt::settings_pack::announce_to_all_tiers, true);
         }
         settings.set_int(lt::settings_pack::active_downloads, 3);
         settings.set_int(lt::settings_pack::active_limit, 6);
@@ -500,7 +605,7 @@ public:
         settings.set_bool(lt::settings_pack::enable_natpmp, false);
         settings.set_bool(lt::settings_pack::enable_lsd, !isolated_);
         settings.set_bool(lt::settings_pack::enable_dht, !isolated_);
-        settings.set_int(lt::settings_pack::alert_mask, int(static_cast<uint32_t>(lt::alert_category::error | lt::alert_category::storage | lt::alert_category::status | lt::alert_category::dht)));
+        settings.set_int(lt::settings_pack::alert_mask, int(static_cast<uint32_t>(lt::alert_category::error | lt::alert_category::storage | lt::alert_category::status | lt::alert_category::dht | (diagnostics_ ? lt::alert_category::tracker | lt::alert_category::piece_progress | lt::alert_category::connect | lt::alert_category::dht_operation : lt::alert_category_t{}))));
         if (isolated_) {
             settings.set_str(lt::settings_pack::listen_interfaces,"127.0.0.1:0");
             settings.set_str(lt::settings_pack::outgoing_interfaces,"127.0.0.1");
@@ -515,7 +620,21 @@ public:
             settings.set_int(lt::settings_pack::active_downloads, active==0 ? -1 : active);
             settings.set_int(lt::settings_pack::active_limit, active==0 ? -1 : active+3);
         }
-        session_ = std::make_unique<lt::session>(settings);
+        // Keep routing contacts outside the disposable movie buffer. Without
+        // them each TV playback rebuilds DHT discovery from bootstrap nodes.
+        network_state_=config.value("networkState",std::string());
+        lt::session_params session_params;
+        if (!isolated_ && !network_state_.empty()) {
+            try {
+                if (fs::exists(network_state_) && fs::file_size(network_state_) <= 1024*1024) {
+                    auto bytes=read_file(network_state_);
+                    session_params=lt::read_session_params(bytes,lt::session_handle::save_dht_state);
+                    trace({{"event","dht_restored"},{"nodes",session_params.dht_state.nodes.size()},{"nodes6",session_params.dht_state.nodes6.size()}});
+                }
+            } catch (...) {} // Discard a missing/corrupt cache and bootstrap normally.
+        }
+        session_params.settings=settings;
+        session_ = std::make_unique<lt::session>(std::move(session_params));
         // libtorrent normally exempts LAN peers from global rate limits.
         // The user's limits apply consistently to local and remote peers.
         lt::ip_filter classes;
@@ -558,7 +677,7 @@ public:
             auto saved = Clock::now();
             while (!stopping_) {
                 { std::lock_guard lock(mutex_);
-                  try { alerts(); if (Clock::now()-saved>15s) { resume_request(); saved=Clock::now(); } }
+                  try { alerts(); if (Clock::now()-saved>15s) { resume_request(); save_network_state(); saved=Clock::now(); } }
                   catch (const std::exception& e) { persistence_error_=e.what(); } }
                 std::this_thread::sleep_for(100ms);
             }
@@ -567,18 +686,19 @@ public:
     ~Engine() {
         stopping_=true; clients_ready_.notify_all();
         if (listener_thread_.joinable()) listener_thread_.join();
-        if (listener_ >= 0) close(listener_);
+        if (listener_ >= 0) { close(listener_); listener_ = -1; }
 
         { std::lock_guard lock(clients_mutex_); for (auto fd:clients_) shutdown(fd,SHUT_RDWR); while (!pending_.empty()) { close(pending_.front()); pending_.pop(); } }
         for (auto& worker:workers_) worker.join();
         if (alerts_thread_.joinable()) alerts_thread_.join();
+        save_network_state();
         try {
             resume_request(); auto until=Clock::now()+3s;
             while (Clock::now()<until) { alerts(); std::this_thread::sleep_for(50ms); }
             save_manifest();
         } catch (...) {}
         session_.reset();
-        if (profile_lock_>=0) { flock(profile_lock_,LOCK_UN); close(profile_lock_); }
+        if (profile_lock_>=0) { flock(profile_lock_,LOCK_UN); close(profile_lock_); profile_lock_ = -1; }
     }
     json command(const json& args) {
         std::lock_guard lock(mutex_);
@@ -603,6 +723,7 @@ public:
             tasks_.erase(t->id); save_manifest(); fs::remove(profile_/(t->id+".resume")); fs::remove(profile_/(t->id+".torrent")); return {{"ok",true}};
         }
         if (method=="prepareStream") {
+            trace({{"event","prepareStream"}});
             if (stream_only_ && t->handle.torrent_file()) {
                 // Known file lists need no peer connections until a video is chosen.
                 t->paused=true; t->handle.unset_flags(lt::torrent_flags::auto_managed);
@@ -617,6 +738,7 @@ public:
         }
         if (method=="streamPaused") { t->playback_paused=args.at("paused"); return {{"ok",true}}; }
         if (method=="stream") {
+            trace({{"event","stream"}});
             auto info=t->handle.torrent_file(); if (!info) throw std::runtime_error("Metadata is not ready");
             int index=args.at("file");
             if (index<0 || index>=info->num_files() || !video(info->layout().file_path(lt::file_index_t(index)))) throw std::runtime_error("Choose a video file");
