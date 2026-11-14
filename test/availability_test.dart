@@ -56,7 +56,8 @@ void main() {
           ),
         ),
       );
-      expect(find.textContaining('Подключение не проверено'), findsOneWidget);
+      expect(find.text('С 10 · П 4'), findsOneWidget);
+      expect(find.byIcon(Icons.help_outline), findsOneWidget);
       expect(find.textContaining('/5'), findsNothing);
       expect(find.byTooltip(label), findsOneWidget);
       expect(find.bySemanticsLabel(label), findsOneWidget);
