@@ -63,7 +63,9 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "watchedSnapshot" -> result.success(WatchedHistory(this).snapshot())
                     "setWatched" -> { WatchedHistory(this).set(call.argument<String>("watchedSource"), call.argument<String>("watchedTitle"), call.argument<Boolean>("watched") == true); result.success(null) }
-                    "torrentOpen" -> torrents.call(call, result)
+                    "sourceProbe" -> SourceProbe.start(this, call, result)
+                    "sourceProbeCancel" -> { SourceProbe.cancel(); result.success(null) }
+                    "torrentOpen" -> { SourceProbe.cancel(); torrents.call(call, result) }
                     "torrentAdd", "torrentPlay", "torrentImport" -> if (TvWindow.isTv(this)) torrents.call(call, result)
                         else downloadNotifications.run(result) { torrents.call(call, result) }
                     "torrentCommand" -> if (!TvWindow.isTv(this) && call.argument<Map<String, Any?>>("request")?.get("method") == "resume") {
