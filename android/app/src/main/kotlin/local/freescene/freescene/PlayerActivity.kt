@@ -39,7 +39,7 @@ open class PlayerActivity : Activity() {
     private var backPressed = false
     private var backHidesControls = false
     override fun onResume() { super.onResume(); TvWindow.applyPlayer(this); if (resumeDialog == null) idleControls?.start() }
-    override fun onPause() { watchedClock.sample(false); saveProgress(); idleControls?.stop(); super.onPause() }
+    override fun onPause() { remoteSeek.cancel(); watchedClock.sample(false); saveProgress(); idleControls?.stop(); super.onPause() }
     override fun onWindowFocusChanged(focused: Boolean) {
         super.onWindowFocusChanged(focused)
         if (focused) TvWindow.applyPlayer(this)
@@ -53,6 +53,21 @@ open class PlayerActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var titleBar: PlayerTitleView
     private var player: ExoPlayer? = null
+    private val remoteSeek = RemoteSeek(seek = { target ->
+        player?.let {
+            android.util.Log.i("FreeScenePlayback", "seekCommitted fromMs=${it.currentPosition} targetMs=$target")
+            it.seekTo(target)
+        }
+    }, preview = { target ->
+        if (::status.isInitialized) {
+            val ru = resources.configuration.locales[0].language == "ru"
+            status.text = when {
+                target != null -> (if (ru) "Перемотка: " else "Seek: ") + android.text.format.DateUtils.formatElapsedTime(target / 1000)
+                player?.playbackState == Player.STATE_BUFFERING -> if (ru) "Буферизация…" else "Buffering…"
+                else -> audioWarning.orEmpty()
+            }
+        }
+    })
     private var position = 0L
     private var playing = true
     private val history by lazy { PlaybackHistory(this) }
@@ -154,6 +169,7 @@ open class PlayerActivity : Activity() {
     }
     private fun openFile(file: JSONObject, reset: Boolean = true) {
         if (stopped || isFinishing) return
+        remoteSeek.cancel()
         preparing = true
         saveProgress()
         fileIndex = file.getInt("index")
@@ -227,6 +243,11 @@ open class PlayerActivity : Activity() {
             setPlayedColor(PlayerColors.accent); setScrubberColor(PlayerColors.accent)
             if (TvWindow.isTv(this@PlayerActivity)) {
                 setKeyTimeIncrement(10000)
+                addListener(object : androidx.media3.ui.TimeBar.OnScrubListener {
+                    override fun onScrubStart(timeBar: androidx.media3.ui.TimeBar, position: Long) { remoteSeek.cancel() }
+                    override fun onScrubMove(timeBar: androidx.media3.ui.TimeBar, position: Long) {}
+                    override fun onScrubStop(timeBar: androidx.media3.ui.TimeBar, position: Long, canceled: Boolean) {}
+                })
                 var lastRepeatTime: Long? = null
                 setOnKeyListener { _, key, event ->
                     if (key != KeyEvent.KEYCODE_DPAD_LEFT && key != KeyEvent.KEYCODE_DPAD_RIGHT) false
@@ -250,6 +271,11 @@ open class PlayerActivity : Activity() {
                 }
             }
             loadingTrack = PlayerLoadingTrack(this)
+        }
+        if (TvWindow.isTv(this) && torrentId != null) {
+            for ((id, delta) in listOf(androidx.media3.ui.R.id.exo_rew to -10000L, androidx.media3.ui.R.id.exo_ffwd to 10000L)) {
+                view.findViewById<View>(id)?.setOnClickListener { seekStep(delta, waitForRelease = false) }
+            }
         }
         episodes = PlayerCloseButton(this).apply {
             contentDescription = "Сезоны и серии"
@@ -320,6 +346,7 @@ open class PlayerActivity : Activity() {
         tvFocus?.restore()
     }
     private fun suspendControls() {
+        remoteSeek.cancel()
         controlsSuspended = true
         idleControls?.stop()
         view.controllerShowTimeoutMs = 0
@@ -428,6 +455,7 @@ open class PlayerActivity : Activity() {
                             status.text = audioWarning.orEmpty()
                     }
                     override fun onPlaybackStateChanged(state: Int) {
+                        android.util.Log.i("FreeScenePlayback", "state=$state positionMs=${it.currentPosition} bufferedMs=${it.totalBufferedDuration}")
                         if (state == Player.STATE_READY) { playbackReady = true; playbackFailed = false }
                         if (state == Player.STATE_BUFFERING) status.text = if (resources.configuration.locales[0].language == "ru") "Буферизация…" else "Buffering…"
                         if (state == Player.STATE_ENDED) saveProgress()
@@ -435,6 +463,7 @@ open class PlayerActivity : Activity() {
                             status.text = audioWarning.orEmpty()
                     }
                     override fun onPlayerError(error: PlaybackException) {
+                        android.util.Log.e("FreeScenePlayback", "error=${error.errorCodeName} positionMs=${it.currentPosition}")
                         playbackFailed = true
                         loadingTrack?.stop()
                         status.text = if (resources.configuration.locales[0].language == "ru")
@@ -444,6 +473,18 @@ open class PlayerActivity : Activity() {
                     }
                 })
                 it.addAnalyticsListener(object : AnalyticsListener {
+                    override fun onLoadError(eventTime: AnalyticsListener.EventTime,
+                        loadEventInfo: androidx.media3.exoplayer.source.LoadEventInfo,
+                        mediaLoadData: androidx.media3.exoplayer.source.MediaLoadData,
+                        error: java.io.IOException, wasCanceled: Boolean) {
+                        android.util.Log.i("FreeScenePlayback", "loadError=${error.javaClass.simpleName} bytes=${loadEventInfo.bytesLoaded} durationMs=${loadEventInfo.loadDurationMs} positionMs=${it.currentPosition} canceled=$wasCanceled")
+                    }
+                    override fun onRenderedFirstFrame(eventTime: AnalyticsListener.EventTime, output: Any, renderTimeMs: Long) {
+                        android.util.Log.i("FreeScenePlayback", "firstFrame positionMs=${it.currentPosition}")
+                    }
+                    override fun onDroppedVideoFrames(eventTime: AnalyticsListener.EventTime, droppedFrames: Int, elapsedMs: Long) {
+                        android.util.Log.i("FreeScenePlayback", "droppedFrames=$droppedFrames elapsedMs=$elapsedMs")
+                    }
                     override fun onAudioDecoderInitialized(eventTime: AnalyticsListener.EventTime,
                         decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long) {
                         android.util.Log.i("FreeSceneAudio", "Audio decoder: $decoderName")
@@ -491,6 +532,7 @@ open class PlayerActivity : Activity() {
     }
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+            if (event.action == KeyEvent.ACTION_DOWN) remoteSeek.cancel()
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && !backPressed) {
                 backPressed = true
                 // Latch at key-down: the idle timer may hide controls during a long press.
@@ -507,9 +549,10 @@ open class PlayerActivity : Activity() {
         }
         if (idleControls?.dispatch(event) == true) return true
         if (event.keyCode == KeyEvent.KEYCODE_MEDIA_REWIND || event.keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD) {
-            if (event.action == KeyEvent.ACTION_DOWN) player?.let {
-                it.seekTo(PlaybackPolicy.seek(it.currentPosition,
-                    if (event.keyCode == KeyEvent.KEYCODE_MEDIA_REWIND) -10000 else 10000, it.duration))
+            if (event.action == KeyEvent.ACTION_DOWN) seekStep(
+                if (event.keyCode == KeyEvent.KEYCODE_MEDIA_REWIND) -10000 else 10000, waitForRelease = true)
+            else if (event.action == KeyEvent.ACTION_UP) {
+                if (event.isCanceled) remoteSeek.cancel() else remoteSeek.release()
             }
             return true
         }
@@ -519,5 +562,14 @@ open class PlayerActivity : Activity() {
                 KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
                 KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN)) tvFocus?.moved()
         return handled
+    }
+
+    private fun seekStep(delta: Long, waitForRelease: Boolean) {
+        if (stopped || isFinishing || controlsSuspended) return
+        val current = player ?: return
+        if (torrentId != null && TvWindow.isTv(this)) {
+            remoteSeek.step(current.currentPosition, delta, current.duration)
+            if (!waitForRelease) remoteSeek.release()
+        } else current.seekTo(PlaybackPolicy.seek(current.currentPosition, delta, current.duration))
     }
 }
