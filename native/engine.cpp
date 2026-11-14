@@ -1,6 +1,7 @@
 #include "engine.h"
 #include "range.h"
 #include "stream_window.h"
+#include "trace_url.h"
 #include <libtorrent/session.hpp>
 #include <libtorrent/session_params.hpp>
 #include <libtorrent/settings_pack.hpp>
@@ -60,14 +61,6 @@ void atomic_file(const fs::path& path, const std::string& contents) {
     output.write(contents.data(), contents.size()); output.close();
     if (!output) throw std::runtime_error("Cannot save torrent session");
     fs::rename(temp, path);
-}
-std::string tracker_host(const char* url) {
-    // Never record passkeys, URL paths, or userinfo in diagnostics.
-    std::string value=url ? url : "";
-    auto start=value.find("://"); if(start==std::string::npos) return "unknown";
-    auto end=value.find('/',start+3); auto authority=value.substr(start+3,end-(start+3));
-    auto user=authority.rfind('@'); if(user!=std::string::npos) authority.erase(0,user+1);
-    return value.substr(0,start)+"://"+authority;
 }
 std::string hash_id(const lt::info_hash_t& hashes) {
     std::ostringstream stream;
