@@ -624,6 +624,8 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
               playback: {
                 ...identity,
                 'series': isSeries,
+                if (isSeries && sourceSeason != null) 'season': sourceSeason,
+                if (isSeries && sourceEpisode != null) 'episode': sourceEpisode,
                 'playerDark': preferences.appearance == AppAppearance.dark,
               },
             );
@@ -636,6 +638,8 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
               playback: {
                 ...identity,
                 'series': isSeries,
+                if (isSeries && sourceSeason != null) 'season': sourceSeason,
+                if (isSeries && sourceEpisode != null) 'episode': sourceEpisode,
                 'playerDark': preferences.appearance == AppAppearance.dark,
               },
             );
@@ -2006,6 +2010,7 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
                     key: ValueKey('picker-${title.kind.name}-${title.id}'),
                     title: title,
                     sources: filteredSources,
+                    selectionKey: '$sourceSeason:$sourceEpisode',
                     focus: remote,
                     english: preferences.english,
                     enabled: !playing,

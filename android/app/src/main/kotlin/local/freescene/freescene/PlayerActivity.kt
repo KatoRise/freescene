@@ -116,7 +116,13 @@ open class PlayerActivity : Activity() {
                         videos.isEmpty() -> { playbackFailed = true; status.text = "В раздаче нет поддерживаемого видео" }
                         player?.playerError != null -> Unit // Keep the decoder error visible until retry/exit.
                         player == null && !preparing && chooser == null && resumeDialog == null -> {
-                            if (fileIndex >= 0 || videos.size == 1) openFile(videos.find { it.optInt("index") == fileIndex } ?: videos.first(), reset = false)
+                            if (episodeSelectionPending) {
+                                episodeSelectionPending = false
+                                if (intent.getIntExtra("episode", -1) >= 0) {
+                                    fileIndex = TorrentEpisode.index(videos, intent.getIntExtra("season", -1), intent.getIntExtra("episode", -1)) ?: -1
+                                }
+                            }
+                            if (fileIndex >= 0 || (videos.size == 1 && intent.getIntExtra("episode", -1) < 0)) openFile(videos.find { it.optInt("index") == fileIndex } ?: videos.first(), reset = false)
                             else chooseEpisode()
                         }
                         player?.playbackState == Player.STATE_BUFFERING -> status.text = "Буферизация · ↓ ${task.optLong("rate") / 1024} КиБ/с · Сиды: ${task.optInt("seeds")} · Пиры: ${task.optInt("peers")}"
@@ -127,6 +133,7 @@ open class PlayerActivity : Activity() {
             }
         }
     }
+    private var episodeSelectionPending = true
     private fun chooseEpisode() {
         if (videos.isEmpty() || chooser != null) return
         val initialSelection = player == null
@@ -172,6 +179,7 @@ open class PlayerActivity : Activity() {
         PlayerColors.restore(this)
         watchedClock.elapsed = state?.getLong("watchedElapsed") ?: 0
         if (!TorrentPolicy.id(torrentId) && !PlaybackPolicy.allowed(intent.getStringExtra("url"))) { finish(); return }
+        episodeSelectionPending = state == null
         position = state?.getLong("position") ?: 0
         fileIndex = state?.getInt("torrentFile", -1) ?: torrentId?.let { history.torrentFile(it) } ?: -1
         playing = state?.getBoolean("playing") ?: true
