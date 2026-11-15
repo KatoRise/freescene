@@ -415,7 +415,7 @@ open class PlayerActivity : Activity() {
         }
         audioWarning = null
         player = ExoPlayer.Builder(this, PlayerAudio.renderers(this)).setLoadControl(load)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(this, http)))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(this, http), PlayerExtractors()))
             .setSeekBackIncrementMs(10000).setSeekForwardIncrementMs(10000).build().also {
                 view.player = it
                 if (lowRam) it.trackSelectionParameters = it.trackSelectionParameters.buildUpon()
