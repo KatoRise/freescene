@@ -148,6 +148,22 @@ object TorrentEngine {
         }
     }
     fun trustedStream(url: String?) = synchronized(streams) { url != null && streams.contains(url) }
+    fun replayHistory(context: Context, owner: String, callback: (Result<JSONObject>) -> Unit) {
+        val app = context.applicationContext
+        worker.execute {
+            val tv = TvWindow.isTv(app)
+            val result = runCatching {
+                require(WatchHistory(app).entry(owner)?.optString("sourceType") == "torrent")
+                if (tv) tvSession(app).prepare("history:$owner")
+                initialize(app)
+                command(JSONObject().put("method", "historyCacheSync").put("ids", JSONArray(WatchHistory(app).ids())))
+                command(JSONObject().put("method", "historyReplay").put("owner", owner)).also {
+                    if (tv) it.put("playbackSession", tvSession(app).opened(it.getString("id")))
+                }
+            }.onFailure { if (tv) tvSession(app).abort() }
+            main.post { callback(result) }
+        }
+    }
     fun pauseAll(context: Context, callback: () -> Unit = {}) {
         submit(context, JSONObject().put("method", "status")) { result ->
             val tasks = result.getOrNull()?.optJSONArray("tasks") ?: JSONArray()

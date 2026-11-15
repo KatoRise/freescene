@@ -90,6 +90,20 @@ class TorrentPlayerTest {
             controller.pause().stop().destroy()
         }
     }
+    @Test fun historyReplayUsesExactFileInsteadOfLastViewedEpisode() {
+        val context = RuntimeEnvironment.getApplication()
+        PlaybackHistory(context).rememberTorrentFile("a".repeat(40), 0)
+        for (index in listOf(1, 9)) {
+            val controller = Robolectric.buildActivity(FixtureTorrentPlayer::class.java,
+                Intent(context, FixtureTorrentPlayer::class.java).putExtra("torrentId", "a".repeat(40))
+                    .putExtra("torrentFile", index).putExtra("historyReplay", true))
+                .create().start().resume().visible()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(10))
+            if (index == 1) assertEquals("http://127.0.0.1:8000/fixture/1", controller.get().media)
+            else assertNull(controller.get().media)
+            controller.pause().stop().destroy()
+        }
+    }
     @Test fun tvDoesNotExposeBackgroundDownloadCommands() {
         org.junit.Assume.assumeTrue(BuildConfig.FLAVOR == "tv")
         val activity = Robolectric.buildActivity(android.app.Activity::class.java).setup().get()

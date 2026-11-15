@@ -200,10 +200,12 @@ NS_ASSUME_NONNULL_BEGIN
     [self.web evaluateJavaScript:FSPlayerPresentationScript(self.scaleMode) completionHandler:nil];
 }
 - (void)selectHistoryEpisode {
-    if(!self.watchLaunch || !self.episodes.count)return;
+    if(!self.watchLaunch)return;
+    NSMutableDictionary *metadata=[self.watchLaunch.metadata mutableCopy];metadata[@"webPlayer"]=@(self.webPlayer);self.watchLaunch.metadata=metadata;
+    if(!self.episodes.count)return;
     NSUInteger index=[self.episodes indexOfObjectPassingTest:^BOOL(NSDictionary *episode,NSUInteger i,BOOL *stop){return [episode[@"url"] isEqual:self.source.absoluteString];}];
     if(index==NSNotFound)return;
-    NSMutableDictionary *metadata=[self.watchLaunch.metadata mutableCopy];metadata[@"subtitle"]=self.episodes[index][@"title"] ?: @"";
+    metadata[@"webEpisodeIndex"]=@(index);metadata[@"subtitle"]=self.episodes[index][@"title"] ?: @"";
     [metadata removeObjectForKey:@"episode"];[metadata removeObjectForKey:@"season"];
     [self.watchLaunch select:[NSString stringWithFormat:@"%@:episode:%lu:%@",self.watchLaunch.baseKey,(unsigned long)index,metadata[@"subtitle"]] metadata:metadata];
 }

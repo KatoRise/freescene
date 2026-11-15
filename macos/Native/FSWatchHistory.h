@@ -19,7 +19,7 @@ static inline BOOL FSWatchID(id value) {
 }
 static inline NSMutableDictionary *FSWatchClean(id raw) {
     NSMutableDictionary *out=[NSMutableDictionary new];if(![raw isKindOfClass:NSDictionary.class])return out;
-    for(NSString *field in @[@"title",@"subtitle",@"provider",@"quality"]) {
+    for(NSString *field in @[@"title",@"subtitle",@"provider",@"quality",@"catalogId",@"catalogName",@"catalogEnglishName",@"sourceProvider",@"sourceId",@"downloadDirectory"]) {
         id v=raw[field];if(![v isKindOfClass:NSString.class])continue;
         NSString *value=[v stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         if([value rangeOfString:@"://"].location!=NSNotFound || [value rangeOfString:@"magnet:" options:NSCaseInsensitiveSearch].location!=NSNotFound ||
@@ -30,10 +30,11 @@ static inline NSMutableDictionary *FSWatchClean(id raw) {
         NSUInteger limit=[field isEqual:@"quality"] ? 64 : 1024;if(value.length>limit)value=[value substringToIndex:limit];
         if(value.length && ![value isEqual:@"—"])out[field]=value;
     }
-    for(NSString *field in @[@"season",@"episode",@"sizeBytes"]) {
-        double max=[field isEqual:@"season"] ? 999 : [field isEqual:@"episode"] ? 9999 : 9007199254740991.;
+    for(NSString *field in @[@"season",@"episode",@"sizeBytes",@"catalogYear",@"webEpisodeIndex",@"webPlayer"]) {
+        double max=[field isEqual:@"season"] ? 999 : [field isEqual:@"sizeBytes"] ? 9007199254740991. : [field isEqual:@"webPlayer"] ? 7 : 9999;
         if(FSWatchNumber(raw[field],[field isEqual:@"sizeBytes"] ? 1 : 0,max))out[field]=raw[field];
     }
+    if([@[@"movies",@"series"] containsObject:raw[@"catalogKind"] ?: @""])out[@"catalogKind"]=raw[@"catalogKind"];
     if([@[@"torrent",@"provider",@"download"] containsObject:raw[@"sourceType"] ?: @""])out[@"sourceType"]=raw[@"sourceType"];
     return out;
 }

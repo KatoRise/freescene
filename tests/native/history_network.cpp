@@ -9,11 +9,15 @@ int main() {
     HistoryNetwork cache(root);
     const auto peers=json::array({json::array({"127.0.0.1",1234})});
     assert(!cache.save(a,"torrent",0,peers,"dht",100));assert(!fs::exists(root));
+    cache.save_torrent(a,"metadata",json{{"local","magnet"}});assert(!fs::exists(root));
     cache.sync(json::array({a,b}));assert(!fs::exists(root));
     assert(cache.save(a,"torrent",0,peers,"dht-a",100));
     assert(cache.save(b,"torrent",1,peers,"dht-b",101));
+    cache.save_torrent(a,"metadata",json{{"local","magnet"}});assert(!cache.torrent(a).empty());
+    assert(cache.replay(a).at("file")==0);
     assert(cache.dht()=="dht-a");assert(cache.peers("torrent",102).size()==2);
     cache.sync(json::array({b}));assert(!fs::exists(root/a));assert(fs::exists(root/b));
+    cache.save_torrent(a,"resurrect",json{{"local","magnet"}});assert(cache.torrent(a).empty());
     assert(!cache.save(a,"torrent",0,peers,"resurrect",103));assert(!fs::exists(root/a));
     assert(cache.dht()=="dht-b");assert(cache.peers("other",102).empty());assert(cache.peers("torrent",90000).empty());
     HistoryNetwork restored(root);restored.sync(json::array({b}));assert(restored.peers("torrent",104).size()==1);

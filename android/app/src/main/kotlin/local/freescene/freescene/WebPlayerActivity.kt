@@ -51,7 +51,8 @@ open class WebPlayerActivity : Activity() {
     private val watchLaunch = WatchLaunchClock {
         val metadata = WatchHistory.metadata(intent.getStringExtra("history"))
         val index = episodes.indexOfFirst { it.second == source }
-        if (index >= 0) { metadata.put("subtitle", episodes[index].first); metadata.remove("episode"); metadata.remove("season") }
+        metadata.put("webPlayer", playerIndex)
+        if (index >= 0) { metadata.put("webEpisodeIndex", index); metadata.put("subtitle", episodes[index].first); metadata.remove("episode"); metadata.remove("season") }
         val base = WatchHistory.key(metadata, intent.getStringExtra("watchedSource"))
         WatchHistory(this).record("$base:episode:$index:${episodes.getOrNull(index)?.first.orEmpty()}", metadata).also { if (it) TorrentEngine.syncWatchHistory(this) }
     }

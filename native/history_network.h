@@ -50,6 +50,24 @@ public:
         for(const auto& id:ids_)try { auto bytes=read(root_/id/"dht.state",1024*1024);if(!bytes.empty())return bytes; } catch(...) {}
         return {};
     }
+    void save_torrent(const std::string& id,const std::string& bytes,const json& origin) {
+        if(!allows(id) || bytes.empty() || bytes.size()>16*1024*1024)return;
+        const auto directory=root_/id;std::filesystem::create_directories(directory);
+        write(directory/"source.torrent",bytes);write(directory/"origin.json",origin.dump());
+    }
+    json replay(const std::string& id) const {
+        if(!allows(id))throw std::invalid_argument("History entry no longer exists");
+        try { return json::parse(read(root_/id/"peers.json",16*1024)); } catch(...) { return json::object(); }
+    }
+    std::string torrent(const std::string& id) const {
+        if(!allows(id))return {};
+        const auto path=root_/id/"source.torrent";
+        return read(path,16*1024*1024).empty() ? std::string() : path.string();
+    }
+    json origin(const std::string& id) const {
+        if(allows(id))try { return json::parse(read(root_/id/"origin.json",1024)); } catch(...) {}
+        return {{"local","magnet"}};
+    }
     json peers(const std::string& task,int64_t now) const {
         json result=json::array();
         for(const auto& id:ids_)try {

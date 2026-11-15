@@ -10,6 +10,7 @@ class WatchHistoryPage extends StatefulWidget {
     required this.controller,
     required this.english,
     required this.onBack,
+    this.onPlay,
     this.remote,
     this.mobile = false,
     super.key,
@@ -17,6 +18,7 @@ class WatchHistoryPage extends StatefulWidget {
   final WatchHistoryController controller;
   final bool english, mobile;
   final VoidCallback onBack;
+  final Future<void> Function(WatchEntry)? onPlay;
   final RemoteFocus? remote;
   @override
   State<WatchHistoryPage> createState() => WatchHistoryPageState();
@@ -24,6 +26,7 @@ class WatchHistoryPage extends StatefulWidget {
 
 class WatchHistoryPageState extends State<WatchHistoryPage> {
   bool selecting = false, confirming = false;
+  String? opening;
   final selected = <String>{};
   String tr(String ru, String en) => widget.english ? en : ru;
   bool get tv => widget.remote?.enabled == true;
@@ -67,6 +70,40 @@ class WatchHistoryPageState extends State<WatchHistoryPage> {
       selecting = true;
       if (!selected.add(id)) selected.remove(id);
     });
+  }
+
+  Future<void> activateEntry(WatchEntry entry) async {
+    if (opening != null || widget.controller.removing) return;
+    if (selecting) {
+      toggle(entry.id);
+      return;
+    }
+    if (widget.onPlay == null) return;
+    setState(() => opening = entry.id);
+    try {
+      await widget.onPlay!(entry);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              tr(
+                'Не удалось открыть этот источник. Он мог стать недоступен.',
+                'Could not open this source. It may no longer be available.',
+              ),
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => opening = null);
+        widget.remote?.restore(
+          'history-row-${entry.id}',
+          fallback: 'history-back',
+        );
+      }
+    }
   }
 
   Widget action(
@@ -277,11 +314,9 @@ class WatchHistoryPageState extends State<WatchHistoryPage> {
         id: 'history-row-${entry.id}',
         focus: widget.remote!,
         selected: selected.contains(entry.id),
-        onPressed: widget.controller.removing
+        onPressed: widget.controller.removing || opening != null
             ? null
-            : () {
-                if (tv || selecting) toggle(entry.id);
-              },
+            : () => activateEntry(entry),
         alignment: Alignment.centerLeft,
         padding: const EdgeInsets.all(16),
         child: content,
@@ -290,8 +325,8 @@ class WatchHistoryPageState extends State<WatchHistoryPage> {
     return Card(
       child: InkWell(
         key: ValueKey('history-row-${entry.id}'),
-        onTap: selecting && !widget.controller.removing
-            ? () => toggle(entry.id)
+        onTap: !widget.controller.removing && opening == null
+            ? () => activateEntry(entry)
             : null,
         borderRadius: BorderRadius.circular(12),
         child: Padding(padding: const EdgeInsets.all(16), child: content),
@@ -334,7 +369,7 @@ class WatchHistoryPageState extends State<WatchHistoryPage> {
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
-    final busy = controller.loading || controller.removing;
+    final busy = controller.loading || controller.removing || opening != null;
     final rows = <Object>[];
     String? previousDay;
     for (final entry in controller.entries) {
@@ -429,6 +464,7 @@ class WatchHistoryPageState extends State<WatchHistoryPage> {
               ),
             ],
             const SizedBox(height: 16),
+            if (opening != null) const LinearProgressIndicator(),
             Expanded(
               child: controller.loading && controller.entries.isEmpty
                   ? const Center(child: CircularProgressIndicator())
