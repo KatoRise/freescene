@@ -91,8 +91,20 @@ String _normalize(String value) => value
     .toLowerCase()
     .replaceAll('ё', 'е')
     .replaceAll(RegExp(r'\s+'), ' ');
+bool sourceHasMultipleVoices(String? value) {
+  if (value == null) return false;
+  return RegExp(
+            r'(?:перевод|озвучка|audio|translation)\s*\d+',
+            caseSensitive: false,
+          ).allMatches(value).length >
+          1 ||
+      RegExp(r'[;|\n]|\s[/+]\s').hasMatch(value);
+}
+
 String? _namedVoice(String? value) {
-  if (value == null || value.trim().isEmpty) return null;
+  if (value == null || value.trim().isEmpty || sourceHasMultipleVoices(value)) {
+    return null;
+  }
   final normalized = _normalize(value);
   final words = normalized
       .split(RegExp(r'[^a-zа-я0-9]+'))
@@ -169,7 +181,11 @@ class SourceVoiceChoice {
   final String key;
   final String? audio;
   final List<CatalogSource> sources;
-  String label(bool english) => audio?.trim().isNotEmpty == true
+  String label(bool english) => sourceHasMultipleVoices(audio)
+      ? (english
+            ? 'Multiple voices · choose in player'
+            : 'Несколько озвучек · выбор в плеере')
+      : audio?.trim().isNotEmpty == true
       ? audio!.trim()
       : english
       ? 'Voice not specified'

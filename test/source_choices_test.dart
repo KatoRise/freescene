@@ -94,4 +94,21 @@ void main() {
       'restricted',
     ]);
   });
+  test(
+    'composite voice descriptions stay separate and advertise player selection',
+    () {
+      final sources = [
+        candidate('a', audio: 'Перевод 1: LostFilm Перевод 2: AlexFilm'),
+        candidate('b', audio: 'Перевод 1: LostFilm Перевод 2: AlexFilm'),
+        candidate('c', audio: 'LostFilm / AlexFilm'),
+      ];
+      final groups = sourceVoiceChoices(sources, series: false);
+      expect(groups, hasLength(3));
+      expect(
+        groups.every((group) => group.label(false).contains('выбор в плеере')),
+        isTrue,
+      );
+      expect(sourceHasMultipleVoices('LostFilm (AC3 5.1)'), isFalse);
+    },
+  );
 }
