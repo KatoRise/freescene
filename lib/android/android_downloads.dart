@@ -302,7 +302,21 @@ class _AndroidDownloadsState extends State<AndroidDownloads> {
                               'watch-${task.id}',
                               Icons.play_arrow,
                               tr('Смотреть', 'Watch'),
-                              () => action(() => torrents.play(task.id)),
+                              () => action(
+                                () => torrents.play(
+                                  task.id,
+                                  title: task.title,
+                                  playback: {
+                                    'history': {
+                                      'title': task.title,
+                                      'provider': task.origin.localizedLabel(
+                                        widget.english,
+                                      ),
+                                      'sourceType': 'torrent',
+                                    },
+                                  },
+                                ),
+                              ),
                             ),
                             button(
                               'pause-${task.id}',

@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""History-owned peer hints restore a new engine without discovery or peer injection."""
+import argparse
+import ctypes
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import tempfile
+import time
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+ROOT = Path(__file__).resolve().parents[2]
+spec = importlib.util.spec_from_file_location('fixture', ROOT / 'tests/stream_fixture.py')
+fixture = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fixture)
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--engine', type=Path, required=True)
+    args = parser.parse_args()
+    lib = ctypes.CDLL(str(args.engine.resolve()))
+    lib.fs_engine_create.argtypes = [ctypes.c_char_p]
+    lib.fs_engine_create.restype = ctypes.c_void_p
+    lib.fs_engine_command.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    lib.fs_engine_command.restype = ctypes.c_void_p
+    lib.fs_engine_free.argtypes = [ctypes.c_void_p]
+    lib.fs_engine_destroy.argtypes = [ctypes.c_void_p]
+    handles = []
+    def call(handle, method, **values):
+        raw = lib.fs_engine_command(handle, json.dumps(dict(method=method, **values)).encode())
+        try: result = json.loads(ctypes.string_at(raw))
+        finally: lib.fs_engine_free(raw)
+        assert 'error' not in result, result
+        return result['result']
+    with tempfile.TemporaryDirectory(prefix='freescene-history-peer-') as temp:
+        root = Path(temp)
+        cache = root / 'history-network'
+        def create(name, owners=()):
+            config = dict(profile=str(root/name/'profile'), downloads=str(root/name/'data'), isolated=True,
+                          streamOnly=name != 'seed', lite=True)
+            if name != 'seed': config.update(historyCache=str(cache), historyIds=list(owners))
+            handle = lib.fs_engine_create(json.dumps(config).encode()); assert handle; handles.append(handle)
+            return handle
+        def destroy(handle):
+            lib.fs_engine_destroy(handle); handles.remove(handle)
+        piece = 256*1024
+        data = b''.join(bytes([i])*piece for i in range(64))
+        info = dict(name='fixture.mp4', length=len(data), private=1, **{'piece length':piece,
+                    'pieces':b''.join(hashlib.sha1(data[i:i+piece]).digest() for i in range(0,len(data),piece))})
+        task = hashlib.sha1(fixture.encode(info)).hexdigest()
+        owner = hashlib.sha256(f'torrent:{task}:0'.encode()).hexdigest()
+        torrent = root/'fixture.torrent';torrent.write_bytes(fixture.encode({'info':info}))
+        seed_path = root/'seed/data'/task/'fixture.mp4';seed_path.parent.mkdir(parents=True);seed_path.write_bytes(data)
+        def read(url, offset=0):
+            req = urllib.request.Request(url, headers={'Range':f'bytes={offset}-{offset+4095}'})
+            with urllib.request.urlopen(req, timeout=35) as response: assert response.read() == data[offset:offset+4096]
+        try:
+            seed = create('seed'); call(seed,'add',source=str(torrent))
+            deadline = time.monotonic()+30
+            while call(seed,'status')['tasks'][0]['phase'] != 'seeding':
+                assert time.monotonic()<deadline;time.sleep(.1)
+            first = create('first');call(first,'add',source=str(torrent));call(first,'prepareStream',id=task)
+            url = call(first,'stream',id=task,file=0)['url']
+            with ThreadPoolExecutor(max_workers=1) as worker:
+                pending = worker.submit(read,url)
+                call(first,'connectPeer',id=task,port=call(seed,'status')['listenPort']);pending.result(timeout=40)
+            assert not cache.exists()
+            assert not call(first,'historyCacheRecord',id=task,file=0)['saved']
+            assert not cache.exists()
+            # The native player issues this grant only after a successful 3-second history write.
+            call(first,'historyCacheSync',ids=[owner]);assert not cache.exists()
+            assert call(first,'historyCacheRecord',id=task,file=0)['saved']
+            assert (cache/owner/'peers.json').exists()
+            destroy(first)
+            second = create('second',[owner]);call(second,'add',source=str(torrent));call(second,'prepareStream',id=task)
+            url = call(second,'stream',id=task,file=0)['url']
+            started = time.monotonic();read(url,12*1024*1024)
+            restored = round(time.monotonic()-started,3)
+            call(second,'historyCacheRecord',id=task,file=0)
+            call(second,'historyCacheSync',ids=[])
+            assert not cache.exists()
+            assert not call(second,'historyCacheRecord',id=task,file=0)['saved']
+            destroy(second);assert not cache.exists()
+            print(json.dumps(dict(passed=True,createdBeforeEligible=False,restoredAcrossEngineRestart=True,
+                                  discoveryDisabled=True,secondPeerInjection=False,restoreSeconds=restored,
+                                  deletedWithHistory=True,recreatedAfterDeletion=False)))
+        finally:
+            for handle in reversed(handles): lib.fs_engine_destroy(handle)
+if __name__=='__main__': main()

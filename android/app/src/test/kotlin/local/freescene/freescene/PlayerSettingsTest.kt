@@ -51,6 +51,20 @@ class PlayerSettingsTest {
         assertTrue(provider.getTrackName(audio(" LostFilm\n\t HD ")).startsWith("LostFilm HD · "))
     }
 
+    @Test fun unlabeledLanguagesAreHonestAndIdenticalChannelLayoutsRemainDistinct() {
+        val provider = PlayerTrackNames(context.resources)
+        val unknown = audio().buildUpon().setLanguage(null).build()
+        val first = provider.audioTrackName(unknown, 1)
+        val second = provider.audioTrackName(unknown, 2)
+        assertNotEquals(first, second)
+        assertTrue(first.contains("1")); assertTrue(second.contains("2"))
+        assertTrue(first.contains("Language unspecified") || first.contains("Язык не указан"))
+        val english = audio().buildUpon().setLanguage("en").build()
+        assertNotEquals(provider.audioTrackName(audio(), 1), provider.audioTrackName(english, 2))
+        assertEquals(provider.getTrackName(english), provider.audioTrackName(english, 2))
+        assertTrue(provider.audioTrackName(unknown.buildUpon().setLabel("English original").build(), 1).contains("English original"))
+    }
+
     private class Fixture {
         var tracks = Tracks(ImmutableList.of(
             Tracks.Group(TrackGroup("first", Format.Builder().setSampleMimeType("audio/ac3").setLanguage("ru").setChannelCount(6).setLabel("LostFilm").build()), false, intArrayOf(C.FORMAT_HANDLED), booleanArrayOf(true)),

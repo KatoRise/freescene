@@ -166,6 +166,7 @@ class TorrentController extends ChangeNotifier {
     String? providerName,
     required String kind,
     Map<String, String> identity = const {},
+    Map<String, Object?> history = const {},
     int? webPlayer,
     List<Map<String, String>> webEpisodes = const [],
   }) async {
@@ -173,6 +174,7 @@ class TorrentController extends ChangeNotifier {
     _pendingWatch = null;
     await service.call('openProvider', {
       ...identity,
+      'history': history,
       'url': url,
       'title': title,
       'provider': provider,
@@ -186,6 +188,7 @@ class TorrentController extends ChangeNotifier {
   Future<void> watch(
     String id, {
     Map<String, String> identity = const {},
+    Map<String, Object?> history = const {},
   }) async {
     final epoch = ++_watchEpoch;
     _pendingWatch = null;
@@ -195,6 +198,13 @@ class TorrentController extends ChangeNotifier {
       final filename = (await _downloads()).completedFile(id);
       if (_disposed || _stopping || epoch != _watchEpoch) return;
       await service.call('openDownloadedVideo', {
+        'history': {
+          'title': task.title,
+          'provider': task.origin.localizedLabel(english?.call() == true),
+          'quality': task.quality,
+          'sizeBytes': task.total,
+          'sourceType': 'download',
+        },
         'filename': filename,
         'directory':
             ProviderSetup.current.downloadDirectory ??
@@ -205,6 +215,12 @@ class TorrentController extends ChangeNotifier {
     }
     await service.call('preparePlayer', {
       'id': id,
+      'history': {
+        'title': task.title,
+        'provider': task.origin.localizedLabel(english?.call() == true),
+        'sourceType': 'torrent',
+        ...history,
+      },
       'title': task.title,
       ...identity,
     });

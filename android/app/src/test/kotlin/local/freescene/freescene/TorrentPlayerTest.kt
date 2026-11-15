@@ -43,7 +43,7 @@ class TorrentPlayerTest {
         val dialog = ShadowAlertDialog.getLatestAlertDialog()
         assertTrue(dialog.isShowing)
         assertEquals(2, dialog.listView.count)
-        assertEquals(0, dialog.listView.checkedItemPosition)
+        assertEquals(-1, dialog.listView.checkedItemPosition)
         assertNull(activity.media)
         assertTrue(activity.commands.contains("prepareStream"))
         dialog.listView.performItemClick(dialog.listView.getChildAt(1), 1, 1)

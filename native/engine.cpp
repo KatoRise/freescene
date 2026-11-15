@@ -1,5 +1,7 @@
 #include "engine.h"
 #include "range.h"
+#include "history_network.h"
+#include <libtorrent/hasher.hpp>
 #include <libtorrent/session.hpp>
 #include <libtorrent/session_params.hpp>
 #include <libtorrent/settings_pack.hpp>
@@ -126,6 +128,34 @@ class Engine {
     std::string persistence_error_, dht_error_;
     bool isolated_ = false, dht_bootstrapped_ = false, stream_only_ = false;
     size_t piece_cache_bytes_ = 32 * 1024 * 1024;
+    HistoryNetwork history_network_;
+    std::map<std::string,std::pair<std::string,int>> history_files_;
+    static int64_t network_time() { return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count(); }
+    static std::string history_id(const std::string& task,int file) {
+        const auto key="torrent:"+task+":"+std::to_string(file);
+        std::ostringstream out;out<<lt::hasher256(key.data(),int(key.size())).final();return out.str();
+    }
+    void save_history_network(const std::shared_ptr<Task>& task) noexcept {
+        try {
+            if(std::none_of(history_files_.begin(),history_files_.end(),[&](const auto& entry){return entry.second.first==task->id && history_network_.allows(entry.first);}))return;
+            json peers=json::array();for(const auto& peer:task->playback_peers)peers.push_back({peer.address().to_string(),peer.port()});
+            std::string dht;
+            if(!isolated_) { const auto flags=lt::session_handle::save_dht_state;auto state=session_->session_state(flags);auto bytes=lt::write_session_params_buf(state,flags);dht.assign(bytes.data(),bytes.size()); }
+            for(const auto& [owner,file]:history_files_)if(file.first==task->id && history_network_.allows(owner))
+                history_network_.save(owner,task->id,file.second,peers,dht,network_time());
+        } catch(...) {} // Optional discovery data never interrupts playback.
+    }
+    void restore_history_peers(const std::shared_ptr<Task>& task) noexcept {
+        try {
+            for(const auto& peer:history_network_.peers(task->id,network_time())) {
+                lt::error_code error;auto address=lt::make_address(peer.at(0).get<std::string>(),error);const int port=peer.at(1).get<int>();
+                if(error || address.is_unspecified() || address.is_multicast() || port<1 || port>65535 || (isolated_ && !address.is_loopback()))continue;
+                const lt::tcp::endpoint endpoint(address,static_cast<unsigned short>(port));
+                if(std::find(task->playback_peers.begin(),task->playback_peers.end(),endpoint)==task->playback_peers.end())task->playback_peers.push_back(endpoint);
+                if(task->playback_peers.size()>=40)break;
+            }
+        } catch(...) {}
+    }
     json limits_ = {{"download",0},{"upload",0},{"active",3}};
 
     void save_manifest() {
@@ -134,7 +164,7 @@ class Engine {
         atomic_file(profile_ / "tasks.json", json{{"version", 1}, {"tasks", list}}.dump(2));
     }
     void resume_request() {
-        for (auto& [id, t] : tasks_) t->handle.save_resume_data(lt::torrent_handle::save_info_dict | lt::torrent_handle::flush_disk_cache);
+        for (auto& [id, t] : tasks_) { remember_playback_peers(t); t->handle.save_resume_data(lt::torrent_handle::save_info_dict | lt::torrent_handle::flush_disk_cache); }
     }
     void alerts() {
         std::vector<lt::alert*> alerts;
@@ -265,6 +295,7 @@ class Engine {
             atomic_file(local, read_file(source)); t->source = local.string();
         }
         if (t->paused) { params.flags &= ~lt::torrent_flags::auto_managed; params.flags |= lt::torrent_flags::paused; }
+        restore_history_peers(t);
         t->handle = session_->add_torrent(params);
         tasks_[id] = t;
         if (!restoring) save_manifest();
@@ -345,6 +376,7 @@ class Engine {
             if (endpoints.size() == 40) break;
         }
         if (!endpoints.empty()) t->playback_peers = std::move(endpoints);
+        save_history_network(t);
     }
     void update_window(const std::shared_ptr<Task>& t, int fd, int first, int last) {
         std::lock_guard lock(mutex_);
@@ -515,7 +547,12 @@ public:
             settings.set_int(lt::settings_pack::active_downloads, active==0 ? -1 : active);
             settings.set_int(lt::settings_pack::active_limit, active==0 ? -1 : active+3);
         }
-        session_ = std::make_unique<lt::session>(settings);
+        history_network_=HistoryNetwork(config.value("historyCache",std::string()));
+        history_network_.sync(config.value("historyIds",json::array()));
+        lt::session_params params;
+        if(!isolated_)try { const auto bytes=history_network_.dht();if(!bytes.empty())params=lt::read_session_params(bytes,lt::session_handle::save_dht_state); } catch(...) {}
+        params.settings=settings;
+        session_ = std::make_unique<lt::session>(std::move(params));
         // libtorrent normally exempts LAN peers from global rate limits.
         // The user's limits apply consistently to local and remote peers.
         lt::ip_filter classes;
@@ -567,7 +604,7 @@ public:
     ~Engine() {
         stopping_=true; clients_ready_.notify_all();
         if (listener_thread_.joinable()) listener_thread_.join();
-        if (listener_ >= 0) close(listener_);
+        if (listener_ >= 0) { close(listener_); listener_=-1; }
 
         { std::lock_guard lock(clients_mutex_); for (auto fd:clients_) shutdown(fd,SHUT_RDWR); while (!pending_.empty()) { close(pending_.front()); pending_.pop(); } }
         for (auto& worker:workers_) worker.join();
@@ -578,11 +615,23 @@ public:
             save_manifest();
         } catch (...) {}
         session_.reset();
-        if (profile_lock_>=0) { flock(profile_lock_,LOCK_UN); close(profile_lock_); }
+        if (profile_lock_>=0) { flock(profile_lock_,LOCK_UN); close(profile_lock_); profile_lock_=-1; }
     }
     json command(const json& args) {
         std::lock_guard lock(mutex_);
         auto method=args.at("method").get<std::string>();
+        if(method=="historyCacheSync") {
+            history_network_.sync(args.at("ids"));
+            for(auto it=history_files_.begin();it!=history_files_.end();)if(!history_network_.allows(it->first))it=history_files_.erase(it);else ++it;
+            return {{"ok",true}};
+        }
+        if(method=="historyCacheRecord") {
+            const auto id=args.at("id").get<std::string>();const int file=args.at("file");auto task=tasks_.at(id);
+            auto info=task->handle.torrent_file();if(!info || file<0 || file>=info->num_files())throw std::invalid_argument("Invalid history file");
+            const auto owner=history_id(id,file);
+            if(!history_network_.allows(owner))return {{"saved",false}};
+            history_files_[owner]={id,file};remember_playback_peers(task);return {{"saved",true}};
+        }
         if (method=="add") return add(args);
         if (method=="status") return snapshot();
         if (method=="limits") {
