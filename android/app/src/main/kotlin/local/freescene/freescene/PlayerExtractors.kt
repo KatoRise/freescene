@@ -38,6 +38,6 @@ internal class PlayerExtractors(
     }
 
     private fun wrap(extractors: Array<Extractor>) = extractors.map {
-        if (it.underlyingImplementation is AviExtractor) AviAc3Extractor(it) else it
+        if (it.underlyingImplementation is AviExtractor) AviAc3Extractor(AviMpeg4Extractor(it)) else it
     }.toTypedArray()
 }
