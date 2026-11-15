@@ -76,4 +76,14 @@ void main() {
     );
     controller.dispose();
   });
+  test('source resolution timeout remains indeterminate', () async {
+    final controller = SourceChecks(
+      probe: (_) async => throw TimeoutException('resolving'),
+      cancelProbe: () async {},
+    );
+    controller.select('title', [source('slow')]);
+    await tick();
+    expect(recentSourceCheck('test:slow')?.state, SourceCheckState.timeout);
+    controller.dispose();
+  });
 }

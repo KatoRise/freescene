@@ -81,6 +81,8 @@ class SourceChecks {
         SourceCheckState result;
         try {
           result = await probe(source);
+        } on TimeoutException {
+          result = SourceCheckState.timeout;
         } catch (_) {
           result = SourceCheckState.unavailable;
         }

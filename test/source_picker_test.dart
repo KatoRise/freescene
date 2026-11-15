@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -165,6 +167,57 @@ void main() {
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       remote.dispose();
+    },
+  );
+  testWidgets(
+    'catalogue pagination preserves an in-flight probe but a new filter cancels it',
+    (tester) async {
+      final pending = Completer<SourceCheckState>();
+      var cancellations = 0;
+      final checks = SourceChecks(
+        probe: (_) => pending.future,
+        cancelProbe: () async {
+          cancellations++;
+        },
+      );
+      final focus = RemoteFocus(enabled: false);
+      Future<void> show(List<CatalogSource> sources, String filter) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: AndroidSourcePicker(
+                title: const CatalogTitle(
+                  id: 'movie',
+                  kind: CatalogKind.movies,
+                  name: 'Movie',
+                ),
+                sources: sources,
+                selectionKey: filter,
+                focus: focus,
+                english: false,
+                limit: 8,
+                onPlay: (_) {},
+                onCandidates: checks.select,
+                onStop: checks.stop,
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+      }
+
+      await show([candidate('a')], '1:1');
+      final initialCancellations = cancellations;
+      await show([candidate('a'), candidate('b', audio: 'NewStudio')], '1:1');
+      expect(cancellations, initialCancellations);
+      expect(recentSourceCheck('test:a')?.state, SourceCheckState.checking);
+      await show([candidate('a')], '1:2');
+      expect(cancellations, initialCancellations + 1);
+      checks.dispose();
+      pending.complete(SourceCheckState.data);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+      focus.dispose();
     },
   );
 }

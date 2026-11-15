@@ -21,6 +21,7 @@ class AndroidSourcePicker extends StatefulWidget {
     required this.onPlay,
     required this.onCandidates,
     required this.onStop,
+    this.selectionKey = '',
     this.onCheck,
     this.onDownload,
     this.posterCache,
@@ -28,6 +29,7 @@ class AndroidSourcePicker extends StatefulWidget {
     this.enabled = true,
   });
   final CatalogTitle title;
+  final String selectionKey;
   final List<CatalogSource> sources;
   final RemoteFocus focus;
   final bool english, enabled;
@@ -86,6 +88,10 @@ class _AndroidSourcePickerState extends State<AndroidSourcePicker> {
       widget.title.kind.name,
       widget.title.id,
       quality?.name,
+      widget.selectionKey,
+    ]);
+    final inventory = jsonEncode([
+      scope,
       for (final group in groups)
         [group.key, for (final s in group.sources) sourceCheckKey(s)],
     ]);
@@ -94,8 +100,8 @@ class _AndroidSourcePickerState extends State<AndroidSourcePicker> {
       generation++;
       return;
     }
-    if (scope == notified) return;
-    notified = scope;
+    if (inventory == notified) return;
+    notified = inventory;
     final current = ++generation;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && widget.enabled && generation == current) {
