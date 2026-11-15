@@ -22,6 +22,8 @@ class TorrentEpisodeTest {
     @Test fun ambiguousOrUnrecognizedFilesRequireManualChoice() {
         for (names in listOf(arrayOf("Show.S01E02.1080.mkv", "Show.S01E02.720.mkv"),
             arrayOf("Show.S01E02E03.mkv"), arrayOf("Show.S01E02-03.mkv"),
+            arrayOf("Show.S01E02.S01E03.mkv"), arrayOf("Show.1x02x03.mkv"),
+            arrayOf("Show.S01E01E02.S01E02.mkv"), arrayOf("Show.S01E02 - 03.mkv"),
             arrayOf("Show.S01E020.mkv"), arrayOf("Show.02.mkv"))) {
             assertNull(TorrentEpisode.index(files(*names), 1, 2))
         }
