@@ -405,8 +405,10 @@ open class PlayerActivity : Activity() {
         playbackFailed = false
         if (!PlaybackPolicy.allowed(url) && !TorrentEngine.trustedStream(url)) { status.text = "Недопустимый адрес видео"; return }
         val lowRam = (getSystemService(ACTIVITY_SERVICE) as ActivityManager).isLowRamDevice
+        // Give hash-verified torrent pieces time to arrive after startup and seeks.
+        val torrentPlayback = torrentId != null
         val load = DefaultLoadControl.Builder().setTargetBufferBytes(PlaybackPolicy.bufferBytes(lowRam))
-            .setBufferDurationsMs(10000, 30000, 1000, 2000)
+            .setBufferDurationsMs(10000, 30000, if (torrentPlayback) 10000 else 1000, if (torrentPlayback) 10000 else 2000)
             .setPrioritizeTimeOverSizeThresholds(false).build()
         val http = DefaultHttpDataSource.Factory().setReadTimeoutMs(60000).setConnectTimeoutMs(15000)
             .setUserAgent(PlaybackPolicy.userAgent(url) ?: "FreeScene/${BuildConfig.VERSION_NAME} Android")

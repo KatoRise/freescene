@@ -28,6 +28,7 @@ object TorrentEngine {
     private val main = Handler(Looper.getMainLooper())
     private var handle = 0L
     private var tvSession: TvTorrentSession? = null
+    private fun appNetwork(context: Context) = File(context.filesDir, "torrent-network")
     private fun tvCache(context: Context) = File(context.cacheDir, "torrent-playback")
     private fun closeTvStream(context: Context) {
         if (handle != 0L) TorrentNative.destroy(handle)
@@ -62,6 +63,8 @@ object TorrentEngine {
         })
         val lite = TvWindow.isTv(context) || (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).isLowRamDevice
         handle = TorrentNative.create(JSONObject().put("profile", profile.path).put("downloads", downloads.path)
+            .put("networkState", File(appNetwork(context), "dht.state").path)
+            .put("diagnostics", android.util.Log.isLoggable("FreeSceneTrace", android.util.Log.INFO))
             .put("lite", lite).put("streamOnly", tv).put("pauseOnRestore", true).put("caBundle", ca.path).toString())
         if (handle == 0L) throw IllegalStateException("Не удалось запустить торрент-движок")
     }
