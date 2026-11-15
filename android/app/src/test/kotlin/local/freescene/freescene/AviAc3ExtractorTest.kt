@@ -148,6 +148,27 @@ class AviAc3ExtractorTest {
         assertTrue(sinkErrors(output).isEmpty())
     }
 
+    @Test fun preloadedAudioAndVideoSizedChunksPreserveEveryAc3Frame() {
+        // AVI muxing observed in the reported episode: 12000-byte preload, then
+        // 1001/1002-byte chunks. Recreate the layout with generated silence only.
+        val audio = ByteArray(frame.size * 240) { frame[it % frame.size] }
+        val chunks = mutableListOf(audio.copyOfRange(0, 12000))
+        var offset = 12000
+        var index = 0
+        while (offset < audio.size) {
+            val end = minOf(audio.size, offset + if (index++ % 10 == 9) 1002 else 1001)
+            chunks.add(audio.copyOfRange(offset, end))
+            offset = end
+        }
+        val output = extract(fixed(), avi(chunks))
+        assertEquals(240, output.samples.size)
+        output.samples.forEachIndexed { i, sample ->
+            assertEquals(i * 32000L, sample.time)
+            assertArrayEquals(frame, sample.bytes)
+        }
+        assertTrue(sinkErrors(output).isEmpty())
+    }
+
     @Test fun seekingResetsFramingAndAnchorsToTheSelectedAviPosition() {
         val extractor = fixed()
         val bytes = avi(List(60) { frame + frame })
