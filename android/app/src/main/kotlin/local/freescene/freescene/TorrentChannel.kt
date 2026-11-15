@@ -35,7 +35,7 @@ class TorrentChannel(private val activity: Activity) {
                                     .putExtra("torrentId", id).putExtra("torrentFile", task.getInt("file")).putExtra("historyReplay", true)
                                     .putExtra("playbackSession", session).putExtra("title", entry.optString("title"))
                                     .putExtra("watchedSource", call.argument<String>("watchedSource")).putExtra("watchedTitle", call.argument<String>("watchedTitle"))
-                                    .putExtra("history", entry.toString()).putExtra("series", entry.optString("catalogKind") == "series"))
+                                    .putExtra("history", entry.toString()).putExtra("series", call.argument<Boolean>("series") ?: (entry.optString("catalogKind") == "series")))
                                 result.success(null)
                             } catch (failure: Exception) {
                                 TorrentEngine.submit(activity, JSONObject().put("method", "closeStream").put("id", id).put("playbackSession", session));result.error("torrent", failure.message, null)

@@ -286,6 +286,13 @@ void main() {
             .arguments['owner'],
         owner,
       );
+      expect(
+        calls
+            .where((c) => c.method == 'torrentHistoryPlay')
+            .single
+            .arguments['series'],
+        true,
+      );
       expect(find.text('История просмотра'), findsOneWidget);
       if (!tv) {
         expect(

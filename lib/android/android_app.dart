@@ -604,6 +604,8 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
       await AndroidRuntime.channel.invokeMethod('torrentHistoryPlay', {
         ...entry.watchedIdentity,
         'owner': entry.id,
+        'series':
+            entry.data['catalogKind'] == 'series' || entry.episode != null,
         'playerDark': preferences.appearance == AppAppearance.dark,
       });
     } else {
