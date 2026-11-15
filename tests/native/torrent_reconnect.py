@@ -53,7 +53,8 @@ def main():
         def create(name, streaming):
             handle = lib.fs_engine_create(json.dumps(dict(
                 profile=str(root / name / 'profile'), downloads=str(root / name / 'data'),
-                isolated=True, streamOnly=streaming, lite=streaming)).encode())
+                isolated=True, streamOnly=streaming, lite=streaming,
+                networkState=str(root / "network" / name / "dht.state"))).encode())
             assert handle
             handles.append(handle)
             return handle
@@ -110,7 +111,19 @@ def main():
                 started = time.monotonic()
                 read(offset, length)
                 reconnects.append(round(time.monotonic() - started, 3))
-            print(json.dumps(dict(passed=True, idleBytesDownloaded=0,
+            # A fresh profile has neither downloaded pieces nor resume data.
+            # Retain only the external peer cache, as Android does between TV sessions.
+            call(client, 'pause', id=infohash)
+            lib.fs_engine_destroy(client)
+            handles.remove(client)
+            import shutil
+            shutil.rmtree(root / 'tv')
+            client = create('tv', True)
+            call(client, 'add', source=str(torrent))
+            call(client, 'prepareStream', id=infohash)
+            url = call(client, 'stream', id=infohash, file=0)['url']
+            read(24 * 1024 * 1024)
+            print(json.dumps(dict(passed=True, freshSessionRecovered=True, idleBytesDownloaded=0,
                                   resumedUncachedRange=True,
                                   reconnectSeconds=reconnects)))
         finally:

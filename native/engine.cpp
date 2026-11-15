@@ -155,13 +155,55 @@ class Engine {
             atomic_file(network_state_,{bytes.data(),bytes.size()});
         } catch (...) {} // An optional routing cache must not fail playback.
     }
+    // Keep only peers which completed a connection, outside the disposable TV profile.
+    json playback_peer_cache_ = json::object();
+    static int64_t peer_cache_time() {
+        return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    }
+    void save_playback_peers(const std::shared_ptr<Task>& t) noexcept {
+        if (network_state_.empty() || t->playback_peers.empty()) return;
+        try {
+            json peers=json::array();
+            for (const auto& ep:t->playback_peers) peers.push_back({ep.address().to_string(),ep.port()});
+            const auto now=peer_cache_time();
+            playback_peer_cache_[t->id]={{"at",now},{"peers",peers}};
+            for (auto it=playback_peer_cache_.begin();it!=playback_peer_cache_.end();) {
+                const auto at=it.value().value("at",int64_t(0));
+                if (at>now || now-at>86400) it=playback_peer_cache_.erase(it); else ++it;
+            }
+            while(playback_peer_cache_.size()>100) {
+                auto oldest=playback_peer_cache_.begin();
+                for(auto it=playback_peer_cache_.begin();it!=playback_peer_cache_.end();++it)
+                    if(it.value().value("at",int64_t(0))<oldest.value().value("at",int64_t(0))) oldest=it;
+                playback_peer_cache_.erase(oldest);
+            }
+            fs::create_directories(network_state_.parent_path());
+            atomic_file(network_state_.parent_path()/"playback-peers.json",playback_peer_cache_.dump());
+        } catch (...) {} // Optional discovery hints must not fail streaming.
+    }
+    void restore_playback_peers(const std::shared_ptr<Task>& t) noexcept {
+        if(!stream_only_) return;
+        try {
+            const auto& entry=playback_peer_cache_.at(t->id);
+            const auto age=peer_cache_time()-entry.at("at").get<int64_t>();
+            if(age<0 || age>86400) return;
+            for(const auto& p:entry.at("peers")) {
+                lt::error_code error;
+                auto address=lt::make_address(p.at(0).get<std::string>(),error);
+                const auto port=p.at(1).get<int>();
+                if(error || address.is_unspecified() || address.is_multicast() || port<1 || port>65535 || (isolated_ && !address.is_loopback())) continue;
+                t->playback_peers.emplace_back(address,static_cast<unsigned short>(port));
+                if(t->playback_peers.size()==40) break;
+            }
+        } catch (...) {}
+    }
     void save_manifest() {
         json list = json::array();
         for (auto& [id, t] : tasks_) list.push_back({{"id", id}, {"source", t->source}, {"origin", t->origin}, {"paused", t->paused}});
         atomic_file(profile_ / "tasks.json", json{{"version", 1}, {"tasks", list}}.dump(2));
     }
     void resume_request() {
-        for (auto& [id, t] : tasks_) t->handle.save_resume_data(lt::torrent_handle::save_info_dict | lt::torrent_handle::flush_disk_cache);
+        for (auto& [id, t] : tasks_) { remember_playback_peers(t); t->handle.save_resume_data(lt::torrent_handle::save_info_dict | lt::torrent_handle::flush_disk_cache); }
     }
     void alerts() {
         std::vector<lt::alert*> alerts;
@@ -302,6 +344,7 @@ class Engine {
             atomic_file(local, read_file(source)); t->source = local.string();
         }
         if (t->paused) { params.flags &= ~lt::torrent_flags::auto_managed; params.flags |= lt::torrent_flags::paused; }
+        restore_playback_peers(t);
         t->handle = session_->add_torrent(params);
         tasks_[id] = t;
         if (!restoring) save_manifest();
@@ -381,7 +424,7 @@ class Engine {
             endpoints.push_back(peer.remote_endpoint());
             if (endpoints.size() == 40) break;
         }
-        if (!endpoints.empty()) t->playback_peers = std::move(endpoints);
+        if (!endpoints.empty()) { t->playback_peers = std::move(endpoints); save_playback_peers(t); }
     }
     void update_window(const std::shared_ptr<Task>& t, int fd, int first, int last) {
         std::lock_guard lock(mutex_);
@@ -616,6 +659,13 @@ public:
         // Keep routing contacts outside the disposable movie buffer. Without
         // them each TV playback rebuilds DHT discovery from bootstrap nodes.
         network_state_=config.value("networkState",std::string());
+        try {
+            const auto cache=network_state_.parent_path()/"playback-peers.json";
+            if(!network_state_.empty() && fs::exists(cache) && fs::file_size(cache)<=1024*1024) {
+                auto entries=json::parse(read_file(cache));
+                if(entries.is_object() && entries.size()<=100) playback_peer_cache_=std::move(entries);
+            }
+        } catch (...) {}
         lt::session_params session_params;
         if (!isolated_ && !network_state_.empty()) {
             try {
