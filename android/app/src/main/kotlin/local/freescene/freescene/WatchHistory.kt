@@ -8,6 +8,7 @@ import java.security.MessageDigest
 /** Launch history is independent of resume positions, watched marks and downloads. */
 class WatchHistory(context: Context) {
     private val prefs = context.getSharedPreferences("watch-history", Context.MODE_PRIVATE)
+    fun entry(id: String): JSONObject? = synchronized(lock) { read().find { it.optString("id") == id } }
     fun ids(): List<String> = synchronized(lock) { read().map { it.getString("id") } }
     fun snapshot(): Map<String, Any> = synchronized(lock) { mapOf("entries" to read().map(TorrentEngine::map)) }
     private fun read(): List<JSONObject> = try {
@@ -54,7 +55,7 @@ class WatchHistory(context: Context) {
             if (it.isFinite() && it >= min && it <= max && it == it.toLong().toDouble()) it.toLong() else null
         }
         fun clean(raw: JSONObject): JSONObject = JSONObject().apply {
-            for (field in listOf("title", "subtitle", "provider", "quality")) {
+            for (field in listOf("title", "subtitle", "provider", "quality", "catalogId", "catalogName", "catalogEnglishName", "sourceProvider", "sourceId", "downloadDirectory")) {
                 var value = (raw.opt(field) as? String)?.trim() ?: continue
                 if (value.contains(Regex("(?i)://|magnet:|(?:token|cookie|authorization|password)\\s*="))) continue
                 if (field == "subtitle") value = value.replace('\\', '/').substringAfterLast('/')
@@ -62,8 +63,9 @@ class WatchHistory(context: Context) {
                 value = value.filter { !it.isISOControl() }.take(if (field == "quality") 64 else 1024)
                 if (value.isNotBlank() && value != "—") put(field, value)
             }
-            for ((field, max) in listOf("season" to 999L, "episode" to 9999L, "sizeBytes" to 9007199254740991L))
+            for ((field, max) in listOf("season" to 999L, "episode" to 9999L, "sizeBytes" to 9007199254740991L, "catalogYear" to 9999L, "webEpisodeIndex" to 9999L, "webPlayer" to 7L))
                 number(raw.opt(field), if (field == "sizeBytes") 1 else 0, max)?.let { put(field, it) }
+            (raw.opt("catalogKind") as? String)?.takeIf { it in setOf("movies", "series") }?.let { put("catalogKind", it) }
             (raw.opt("sourceType") as? String)?.takeIf { it in setOf("torrent", "provider", "download") }?.let { put("sourceType", it) }
         }
         fun metadata(value: String?): JSONObject = try { JSONObject(value ?: "{}") } catch (_: Exception) { JSONObject() }

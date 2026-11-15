@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
@@ -12,6 +14,15 @@ Map<String, Object?> sourceWatchHistory(
 ) => {
   'title': title?.title(english) ?? source.row.title,
   'provider': source.row.provider.label,
+  if (title != null) ...{
+    'catalogId': title.id,
+    'catalogKind': title.kind.name,
+    'catalogName': title.name,
+    if (title.englishName != null) 'catalogEnglishName': title.englishName,
+    if (title.year != null) 'catalogYear': title.year,
+    'sourceProvider': source.row.provider.name,
+    'sourceId': source.row.id,
+  },
   if (!source.row.isTorrent) ...{
     'quality': compactQuality(source.row.quality),
     'season': source.row.season,
@@ -31,6 +42,20 @@ class WatchEntry {
   String? get quality => compactQuality(data['quality'] as String? ?? subtitle);
   int? get sizeBytes => data['sizeBytes'] as int?;
   int get watchedAt => data['watchedAt']! as int;
+  Map<String, String> get watchedIdentity {
+    final parts = [
+      'catalogKind',
+      'catalogId',
+      'sourceProvider',
+      'sourceId',
+    ].map((k) => data[k]).toList();
+    if (parts.any((p) => p is! String)) return {};
+    return {
+      'watchedTitle': jsonEncode(parts.take(2).toList()),
+      'watchedSource': jsonEncode(parts),
+    };
+  }
+
   int? get season =>
       data['season'] as int? ??
       SeriesCoverage.parse(subtitle ?? '')?.seasons.singleOrNull;
@@ -50,13 +75,28 @@ class WatchEntry {
       'provider',
       'quality',
       'sourceType',
+      'catalogId',
+      'catalogKind',
+      'catalogName',
+      'catalogEnglishName',
+      'sourceProvider',
+      'sourceId',
+      'downloadDirectory',
     ]) {
       final v = value[field];
       if (v is String && v.trim().isNotEmpty && v.length <= 1024) {
         data[field] = v;
       }
     }
-    for (final field in ['watchedAt', 'season', 'episode', 'sizeBytes']) {
+    for (final field in [
+      'watchedAt',
+      'season',
+      'episode',
+      'sizeBytes',
+      'catalogYear',
+      'webEpisodeIndex',
+      'webPlayer',
+    ]) {
       final v = value[field];
       if (v is int && v >= 0 && v <= 8640000000000000) data[field] = v;
     }

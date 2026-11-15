@@ -1,5 +1,6 @@
 import 'history/watch_history.dart';
 import 'history/watch_history_page.dart';
+import 'history/history_playback.dart';
 import 'catalog/watched.dart';
 
 import 'package:freescene_provider_api/freescene_provider_api.dart';
@@ -473,8 +474,43 @@ class _FreeSceneAppState extends State<FreeSceneApp>
     return task.videos.where((file) => file.index == index).firstOrNull;
   }
 
-  Future<void> _useCatalogSource(CatalogSource source, bool watch) async {
-    final identity = watchedIdentity(_catalog!.selected, source);
+  Future<void> _playHistory(WatchEntry entry) async {
+    if (entry.data['sourceType'] == 'torrent') {
+      await _torrents!.replayHistory(
+        entry.id,
+        entry.data,
+        identity: entry.watchedIdentity,
+      );
+    } else if (entry.data['sourceType'] == 'download') {
+      await widget.nativeService!.call('openDownloadedVideo', {
+        'filename': entry.subtitle,
+        'directory':
+            entry.data['downloadDirectory'] ??
+            ProviderSetup.current.downloadDirectory ??
+            ProviderSetup.current.downloadProvider?.name,
+        'title': entry.title,
+        'history': entry.data,
+      });
+    } else {
+      final match = await resolveHistorySource(entry, _catalog!.repository);
+      if (!mounted || _page != _Page.history) return;
+      await _useCatalogSource(
+        match.source,
+        true,
+        historyTitle: match.title,
+        replay: entry,
+      );
+    }
+  }
+
+  Future<void> _useCatalogSource(
+    CatalogSource source,
+    bool watch, {
+    CatalogTitle? historyTitle,
+    WatchEntry? replay,
+  }) async {
+    final title = historyTitle ?? _catalog!.selected;
+    final identity = watchedIdentity(title, source);
     final resolved = await _catalog!.repository.resolve(source);
     if (!watch && resolved.row.download == DownloadKind.external) {
       if (resolved.uri == null) {
@@ -510,17 +546,19 @@ class _FreeSceneAppState extends State<FreeSceneApp>
       }
       await _torrents!.watchProvider(
         identity: identity,
-        history: sourceWatchHistory(
-          _catalog!.selected,
-          resolved,
-          _preferences.english,
-        ),
-        url: resolved.uri.toString(),
+        history: sourceWatchHistory(title, resolved, _preferences.english),
+        url: resolved.row.watch == SourceKind.embed
+            ? historyPlaybackUrl(
+                replay,
+                resolved.uri!,
+                resolved.webEpisodes,
+              ).toString()
+            : resolved.uri.toString(),
         title: resolved.row.title,
         provider: resolved.row.provider.name,
         providerName: resolved.row.provider.label,
         kind: resolved.row.watch.name,
-        webPlayer: resolved.webPlayer,
+        webPlayer: replay?.data['webPlayer'] as int? ?? resolved.webPlayer,
         webEpisodes: resolved.webEpisodes.map((e) => e.toJson()).toList(),
       );
       return;
@@ -531,11 +569,7 @@ class _FreeSceneAppState extends State<FreeSceneApp>
       await _torrents!.watch(
         id,
         identity: identity,
-        history: sourceWatchHistory(
-          _catalog!.selected,
-          resolved,
-          _preferences.english,
-        ),
+        history: sourceWatchHistory(title, resolved, _preferences.english),
       );
     } else {
       _downloadAdded();
@@ -819,6 +853,7 @@ class _FreeSceneAppState extends State<FreeSceneApp>
                               controller: watchHistory,
                               english: _preferences.english,
                               onBack: () => _selectPage(_lastCatalogPage),
+                              onPlay: _playHistory,
                             )
                           : _page == _Page.downloads && _torrents != null
                           ? DownloadsPage(

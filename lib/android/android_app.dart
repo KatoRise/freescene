@@ -1,5 +1,6 @@
 import '../history/watch_history.dart';
 import '../history/watch_history_page.dart';
+import '../history/history_playback.dart';
 import '../catalog/watched.dart';
 
 import 'dart:async';
@@ -598,12 +599,31 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> play(CatalogSource source) async {
+  Future<void> playHistory(WatchEntry entry) async {
+    if (entry.data['sourceType'] == 'torrent') {
+      await AndroidRuntime.channel.invokeMethod('torrentHistoryPlay', {
+        ...entry.watchedIdentity,
+        'owner': entry.id,
+        'playerDark': preferences.appearance == AppAppearance.dark,
+      });
+    } else {
+      final match = await resolveHistorySource(entry, widget.repository);
+      if (!mounted || screen != 'history') return;
+      await play(match.source, historyTitle: match.title, replay: entry);
+    }
+  }
+
+  Future<void> play(
+    CatalogSource source, {
+    CatalogTitle? historyTitle,
+    WatchEntry? replay,
+  }) async {
     if (playing) return;
     final epoch = ++playbackEpoch;
     final target = remote.last;
-    final identity = watchedIdentity(catalog.selected, source);
-    final isSeries = catalog.selected?.kind == CatalogKind.series;
+    final selectedTitle = historyTitle ?? catalog.selected;
+    final identity = watchedIdentity(selectedTitle, source);
+    final isSeries = selectedTitle?.kind == CatalogKind.series;
     setState(() => playing = true);
     try {
       if (widget.play != null) {
@@ -612,12 +632,12 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
         final resolved = await widget.repository.resolve(source);
         if (!mounted || epoch != playbackEpoch) return;
         final historyMetadata = sourceWatchHistory(
-          catalog.selected,
+          selectedTitle,
           resolved,
           preferences.english,
         );
         final title =
-            catalog.selected?.title(preferences.english) ?? source.row.title;
+            selectedTitle?.title(preferences.english) ?? source.row.title;
         if (resolved.row.isTorrent) {
           if (widget.runtime.tv) {
             await const AndroidTorrents().open(
@@ -660,8 +680,13 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
             'provider': playback.provider,
             'providerName': source.row.provider.label,
             'title': title,
-            'url': playback.url.toString(),
-            'webPlayer': playback.webPlayer ?? 0,
+            'url': historyPlaybackUrl(
+              replay,
+              playback.url,
+              playback.episodes,
+            ).toString(),
+            'webPlayer':
+                replay?.data['webPlayer'] as int? ?? playback.webPlayer ?? 0,
             'episodes': playback.episodes.map((e) => e.toJson()).toList(),
           });
           return;
@@ -685,6 +710,7 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
         });
       }
     } catch (_) {
+      if (replay != null) rethrow;
       if (mounted && epoch == playbackEpoch) {
         setState(() => playing = false);
         await message(
@@ -864,6 +890,7 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
                                         english: preferences.english,
                                         remote: remote,
                                         onBack: () => unawaited(back()),
+                                        onPlay: playHistory,
                                       )
                                     : screen == 'downloads'
                                     ? AndroidDownloads(

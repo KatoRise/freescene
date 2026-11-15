@@ -23,5 +23,9 @@ int main(void) { @autoreleasepool {
     [@"{broken" writeToFile:FSWatchHistoryPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
     NSCAssert([FSWatchSnapshot()[@"entries"] count]==0,@"Corrupt store recovers");
     NSCAssert(FSWatchRecord(@"fresh",base,6000),@"Can write after corruption");
+    NSDictionary *source=@{@"title":@"Series",@"sourceType":@"provider",@"catalogId":@"kino-web:/series/test.html",@"catalogKind":@"series",@"catalogName":@"Series",@"catalogYear":@2026,@"sourceProvider":@"example",@"sourceId":@"web:/series/test.html:1",@"webEpisodeIndex":@4,@"webPlayer":@2,@"url":@"https://expired/?token=secret"};
+    NSCAssert(FSWatchRecord(@"source",source,7000),@"Stable source saved");
+    NSDictionary *saved=FSWatchSnapshot()[@"entries"][0];
+    NSCAssert([saved[@"catalogId"] isEqual:source[@"catalogId"]] && [saved[@"webEpisodeIndex"] isEqual:@4] && !saved[@"url"],@"Stable replay fields only");
     puts("watch history: three-second threshold, pause, deduplication, removal, metadata, limit and corruption passed");
 } return 0; }

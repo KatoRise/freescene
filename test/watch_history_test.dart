@@ -38,6 +38,7 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
   late List<Map<String, Object?>> entries;
   bool failRead = false, failDelete = false;
+  final calls = <MethodCall>[];
   Map<String, Object?> entry(int index, DateTime day) => {
     'id': index.toRadixString(16).padLeft(64, '0'),
     'title': 'Сериал $index',
@@ -48,6 +49,7 @@ void main() {
     'watchedAt': day.millisecondsSinceEpoch,
   };
   Future<Object?> handle(MethodCall call) async {
+    calls.add(call);
     if (call.method == 'watchHistorySnapshot') {
       if (failRead) throw PlatformException(code: 'read');
       return {'entries': entries};
@@ -64,6 +66,7 @@ void main() {
   }
 
   setUp(() {
+    calls.clear();
     entries = [
       entry(1, DateTime(2026, 1, 3, 10)),
       entry(2, DateTime(2026, 1, 2, 20)),
@@ -127,6 +130,7 @@ void main() {
       await controller.refresh();
       final remote = scenario.$3 ? RemoteFocus() : null;
       if (remote != null) addTearDown(remote.dispose);
+      var plays = 0;
       final key = GlobalKey<WatchHistoryPageState>();
       await tester.pumpWidget(
         MaterialApp(
@@ -139,6 +143,9 @@ void main() {
               english: scenario.$2,
               remote: remote,
               onBack: () {},
+              onPlay: (_) async {
+                plays++;
+              },
             ),
           ),
         ),
@@ -158,6 +165,10 @@ void main() {
         expect(badgeRect.left, greaterThan(titleRect.right));
       }
 
+      await tester.tap(find.byKey(ValueKey('history-row-$topEntry')));
+      await tester.pumpAndSettle();
+      expect(plays, 1);
+      expect(key.currentState!.selecting, isFalse);
       expect(find.textContaining('19:00'), findsNothing);
       expect(tester.takeException(), isNull);
       await tester.tap(find.byKey(const ValueKey('history-select')));
@@ -264,6 +275,17 @@ void main() {
         await tester.tap(find.byKey(const ValueKey('lists-history')));
       }
       await tester.pumpAndSettle();
+      expect(find.text('История просмотра'), findsOneWidget);
+      final owner = 3.toRadixString(16).padLeft(64, '0');
+      await tester.tap(find.byKey(ValueKey('history-row-$owner')));
+      await tester.pumpAndSettle();
+      expect(
+        calls
+            .where((c) => c.method == 'torrentHistoryPlay')
+            .single
+            .arguments['owner'],
+        owner,
+      );
       expect(find.text('История просмотра'), findsOneWidget);
       if (!tv) {
         expect(

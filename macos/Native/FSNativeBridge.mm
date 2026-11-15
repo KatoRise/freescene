@@ -896,7 +896,7 @@ static FSNativeBridge *bridge;
         }
         FSPlayer *player=[self ensurePlayer];[player open:path title:call.arguments[@"title"] ?: filename task:nil];
         [self trackPlayer:player arguments:call.arguments];
-        NSMutableDictionary *metadata=[player.watchLaunch.metadata mutableCopy];metadata[@"subtitle"]=filename;
+        NSMutableDictionary *metadata=[player.watchLaunch.metadata mutableCopy];metadata[@"subtitle"]=filename;metadata[@"downloadDirectory"]=call.arguments[@"directory"];
         [player.watchLaunch select:[NSString stringWithFormat:@"download:%@:%@",call.arguments[@"directory"],FSWatchHash(filename)] metadata:metadata];
         result(nil); return;
     }

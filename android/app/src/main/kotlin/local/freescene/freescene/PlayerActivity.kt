@@ -135,7 +135,9 @@ open class PlayerActivity : Activity() {
                         videos.isEmpty() -> { playbackFailed = true; status.text = "В раздаче нет поддерживаемого видео" }
                         player?.playerError != null -> Unit // Keep the decoder error visible until retry/exit.
                         player == null && !preparing && chooser == null && resumeDialog == null -> {
-                            if (fileIndex >= 0 || videos.size == 1) openFile(videos.find { it.optInt("index") == fileIndex } ?: videos.first(), reset = false)
+                            if (intent.getBooleanExtra("historyReplay", false) && videos.none { it.optInt("index") == fileIndex }) {
+                                playbackFailed = true;status.text = "Файл из истории недоступен"
+                            } else if (fileIndex >= 0 || videos.size == 1) openFile(videos.find { it.optInt("index") == fileIndex } ?: videos.first(), reset = false)
                             else chooseEpisode()
                         }
                         player?.playbackState == Player.STATE_BUFFERING -> status.text = "Буферизация · ↓ ${task.optLong("rate") / 1024} КиБ/с · Сиды: ${task.optInt("seeds")} · Пиры: ${task.optInt("peers")}"
@@ -188,7 +190,7 @@ open class PlayerActivity : Activity() {
         watchLaunch.recorded = state?.getBoolean("watchLaunchRecorded") ?: false
         if (!TorrentPolicy.id(torrentId) && !PlaybackPolicy.allowed(intent.getStringExtra("url"))) { finish(); return }
         position = state?.getLong("position") ?: 0
-        fileIndex = state?.getInt("torrentFile", -1) ?: torrentId?.let { history.torrentFile(it) } ?: -1
+        fileIndex = state?.getInt("torrentFile", -1) ?: if (intent.hasExtra("torrentFile")) intent.getIntExtra("torrentFile", -1) else torrentId?.let { history.torrentFile(it) } ?: -1
         playing = state?.getBoolean("playing") ?: true
         playbackKey = state?.getString("playbackKey")
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

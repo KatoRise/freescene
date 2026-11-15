@@ -57,6 +57,18 @@ class WatchHistoryTest {
         assertFalse(WatchHistory(context).record("bad", metadata.put("title", "magnet:?xt=secret")))
         assertThrows(IllegalArgumentException::class.java) { WatchHistory(context).remove(listOf("not-an-id")) }
     }
+    @Test fun stableSourceIdentitySurvivesStoreRoundTripWithoutPlaybackUrl() {
+        val metadata = metadata.put("catalogId", "kino-web:/series/example.html").put("catalogKind", "series")
+            .put("catalogName", "Series").put("catalogYear", 2026).put("sourceProvider", "example")
+            .put("sourceId", "web:/series/example.html:1").put("webEpisodeIndex", 4).put("webPlayer", 2)
+            .put("url", "https://expired/?token=secret")
+        assertEquals("torrent|Series||Zona|", WatchHistory.key(metadata, null))
+        val store = WatchHistory(context);assertTrue(store.record("source", metadata))
+        val saved = store.entry(WatchHistory.hash("source"))!!
+        assertEquals("series", saved.getString("catalogKind"));assertEquals(4, saved.getInt("webEpisodeIndex"))
+        assertEquals("web:/series/example.html:1", saved.getString("sourceId"));assertFalse(saved.has("url"))
+        assertFalse(WatchHistory.clean(metadata.put("sourceId", "https://secret/?token=yes")).has("sourceId"))
+    }
     @Test fun webProgressCannotEarnTimeBySeeking() {
         var records = 0
         val clock = WatchLaunchClock { records++; true }

@@ -364,7 +364,6 @@ class Engine {
         return {{"tasks", list}, {"persistenceError", persistence_error_}, {"port", port_}, {"listenPort", session_->listen_port()}, {"limits", limits_}};
     }
     void remember_playback_peers(const std::shared_ptr<Task>& t) {
-        if (!stream_only_) return;
         std::vector<lt::peer_info> peers;
         t->handle.get_peer_info(peers);
         std::vector<lt::tcp::endpoint> endpoints;
@@ -400,7 +399,7 @@ class Engine {
         // Reintroduce peers only after the new deadlines restore download
         // interest. Otherwise a completed selective stream can retain zero
         // connection candidates even though known seeds have the next range.
-        if (stream_only_ && restarting && !t->paused)
+        if (restarting && !t->paused)
             for (const auto& peer : t->playback_peers) t->handle.connect_peer(peer);
     }
     void serve(int fd) {
@@ -630,7 +629,30 @@ public:
             auto info=task->handle.torrent_file();if(!info || file<0 || file>=info->num_files())throw std::invalid_argument("Invalid history file");
             const auto owner=history_id(id,file);
             if(!history_network_.allows(owner))return {{"saved",false}};
-            history_files_[owner]={id,file};remember_playback_peers(task);return {{"saved",true}};
+            history_files_[owner]={id,file};remember_playback_peers(task);
+            try { auto bytes=lt::create_torrent(*info).generate_buf();history_network_.save_torrent(owner,{bytes.data(),bytes.size()},task->origin); } catch(...) {}
+            return {{"saved",true}};
+        }
+        if(method=="historyReplay") {
+            const auto owner=args.at("owner").get<std::string>();
+            auto saved=history_network_.replay(owner);
+            std::string id=saved.value("task",std::string());int file=saved.value("file",-1);
+            if(id.empty())for(const auto& [candidate,t]:tasks_) {
+                auto info=t->handle.torrent_file();if(!info)continue;
+                for(int i=0;i<info->num_files();++i)if(history_id(candidate,i)==owner){id=candidate;file=i;break;}
+                if(!id.empty())break;
+            }
+            if((id.size()!=40 && id.size()!=64) || id.find_first_not_of("0123456789abcdef")!=std::string::npos || file<0 || history_id(id,file)!=owner)
+                throw std::runtime_error("History source is unavailable");
+            if(!tasks_.count(id)) {
+                const auto magnet=std::string("magnet:?xt=urn:")+(id.size()==40 ? "btih:" : "btmh:1220")+id;
+                const auto path=history_network_.torrent(owner);
+                auto restored=add({{"source",path.empty() ? magnet : path},{"expectedMagnet",magnet},{"origin",history_network_.origin(owner)}});
+                if(restored.at("id")!=id)throw std::runtime_error("History torrent identity changed");
+            }
+            auto info=tasks_.at(id)->handle.torrent_file();
+            if(info && file>=info->num_files())throw std::runtime_error("History file is unavailable");
+            return {{"id",id},{"file",file}};
         }
         if (method=="add") return add(args);
         if (method=="status") return snapshot();
@@ -662,6 +684,7 @@ public:
             t->paused=false; t->playback_paused=false; t->started=t->advanced=Clock::now(); t->problem.clear(); t->event.clear();
             t->handle.unset_flags(lt::torrent_flags::auto_managed);
             t->handle.clear_error(); t->handle.resume(); t->handle.force_reannounce(); t->handle.force_dht_announce();
+            if(!t->handle.torrent_file())for(const auto& peer:t->playback_peers)t->handle.connect_peer(peer);
             save_manifest(); return {{"ok",true}};
         }
         if (method=="streamPaused") { t->playback_paused=args.at("paused"); return {{"ok",true}}; }
