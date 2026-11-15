@@ -80,11 +80,7 @@ internal class PlayerSettings(private val context: Context,
         next.setOnDismissListener {
             if (dialog === next) { dialog = null; dismissed(); if (TvWindow.isTv(context)) returnFocus?.takeIf { it.isShown && it.isEnabled }?.requestFocus() }
         }
-        next.show()
-        next.listView?.let { list ->
-            if (TvWindow.isTv(context)) list.requestFocus()
-            selected?.takeIf { it >= 0 }?.let(list::setSelection)
-        }
+        PlayerListDialog.show(next, selected)
     }
     private fun builder(title: Int) = AlertDialog.Builder(context, android.R.style.Theme_Material_Dialog_Alert)
         .setTitle(title).setNegativeButton(android.R.string.cancel, null)
@@ -116,9 +112,10 @@ internal class PlayerSettings(private val context: Context,
     fun showAudio() {
         val current = player() ?: return
         if (!canSelectAudio(current)) return
+        var audioNumber = 0
         val tracks = current.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }.flatMap { group ->
             (0 until group.length).filter { group.isTrackSupported(it) }.map { index ->
-                Audio(group.mediaTrackGroup, index, names.getTrackName(group.getTrackFormat(index)), group.isTrackSelected(index))
+                Audio(group.mediaTrackGroup, index, names.audioTrackName(group.getTrackFormat(index), ++audioNumber), group.isTrackSelected(index))
             }
         }
         val automatic = current.trackSelectionParameters.overrides.keys.none { it.type == C.TRACK_TYPE_AUDIO }

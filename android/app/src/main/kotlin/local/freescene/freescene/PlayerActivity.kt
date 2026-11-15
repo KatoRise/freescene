@@ -5,7 +5,6 @@ import android.app.AlertDialog
 import android.os.Handler
 import android.os.Looper
 import android.widget.ImageButton
-import android.widget.ArrayAdapter
 import android.view.ViewGroup
 import org.json.JSONObject
 import android.app.ActivityManager
@@ -87,7 +86,8 @@ open class PlayerActivity : Activity() {
     private val torrentId get() = intent.getStringExtra("torrentId")
     private var fileIndex = -1
     private var videos = emptyList<JSONObject>()
-    private var chooser: AlertDialog? = null
+    private var chooser: PlayerEpisodePicker? = null
+    private var episodeNavigation: PlayerEpisodeNavigation? = null
     private var stopped = true
     private var preparing = false
     private var audioWarning: String? = null
@@ -131,32 +131,25 @@ open class PlayerActivity : Activity() {
         if (videos.isEmpty() || chooser != null) return
         val initialSelection = player == null
         suspendControls()
-        val labels = videos.map { it.optString("name") }
-        val adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_single_choice, labels) {
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View = super.getView(position, convertView, parent).apply {
-                (this as TextView).setTextColor(PlayerColors.text)
-                maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
-            }
-        }
-        val selected = videos.indexOfFirst { it.optInt("index") == fileIndex }.coerceAtLeast(0)
-        chooser = AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-            .setTitle("Сезоны и серии")
-            .setSingleChoiceItems(adapter, selected) { dialog, which -> dialog.dismiss(); openFile(videos[which]) }
-            .setNegativeButton("Назад") { _, _ -> if (player == null) finish() }
-            .create().also { dialog ->
-                dialog.setOnCancelListener { if (player == null) finish() }
-                dialog.setOnDismissListener { chooser = null; resumeControls(); if (TvWindow.isTv(this)) { if (initialSelection) view.findViewById<View>(androidx.media3.ui.R.id.exo_play_pause)?.requestFocus() else episodes.requestFocus() } }
-                dialog.show()
-                dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(PlayerColors.panel))
-                dialog.listView.setSelection(selected)
-                if (TvWindow.isTv(this)) dialog.listView.requestFocus()
-            }
+        val files = videos.toList()
+        val selected = files.indexOfFirst { it.optInt("index") == fileIndex }
+        chooser = PlayerEpisodePicker(this, files.map { it.optString("name") }, selected,
+            series = intent.getBooleanExtra("series", false),
+            chosen = { openFile(files[it]) },
+            cancelled = { if (player == null) finish() },
+            dismissed = {
+                chooser = null; resumeControls()
+                if (!stopped && TvWindow.isTv(this)) {
+                    if (initialSelection) view.findViewById<View>(androidx.media3.ui.R.id.exo_play_pause)?.requestFocus() else episodes.requestFocus()
+                }
+            }).also { it.show() }
     }
     private fun openFile(file: JSONObject, reset: Boolean = true) {
         if (stopped || isFinishing) return
         preparing = true
         saveProgress()
         fileIndex = file.getInt("index")
+        updateEpisodeControls()
         if (reset) { position = 0; playing = true }
         player?.release(); player = null; view.player = null; playbackReady = false
         status.text = "Буферизация…"
@@ -189,6 +182,7 @@ open class PlayerActivity : Activity() {
                 controllerAutoShow = false
             }
         }
+        episodeNavigation = PlayerEpisodeNavigation(view)
         settings = PlayerSettings(this, opened = { suspendControls() }, dismissed = { resumeControls() },
             scaling = { scale.button.performClick() }) {
             view.player
@@ -252,7 +246,7 @@ open class PlayerActivity : Activity() {
             loadingTrack = PlayerLoadingTrack(this)
         }
         episodes = PlayerCloseButton(this).apply {
-            contentDescription = "Сезоны и серии"
+            contentDescription = if (resources.configuration.locales[0].language == "ru") "Серии" else "Episodes"
             setImageResource(android.R.drawable.ic_menu_sort_by_size)
             visibility = View.GONE
             setOnClickListener { chooseEpisode() }
@@ -382,16 +376,10 @@ open class PlayerActivity : Activity() {
     }
     private fun updateEpisodeControls() {
         val series = intent.getBooleanExtra("series", false) && videos.size > 1
-        view.setShowPreviousButton(series)
-        view.setShowNextButton(series)
         val index = videos.indexOfFirst { it.optInt("index") == fileIndex }
-        for ((id, offset) in listOf(androidx.media3.ui.R.id.exo_prev to -1, androidx.media3.ui.R.id.exo_next to 1)) {
-            view.findViewById<View>(id)?.apply {
-                isEnabled = series && index >= 0 && index + offset in videos.indices
-                alpha = if (isEnabled) 1f else .35f
-                setOnClickListener { videos.getOrNull(index + offset)?.let { openFile(it, reset = true) } }
-            }
-        }
+        episodeNavigation?.update(series, index > 0, index >= 0 && index + 1 in videos.indices,
+            previous = { videos.getOrNull(index - 1)?.let { openFile(it, reset = true) } },
+            next = { videos.getOrNull(index + 1)?.let { openFile(it, reset = true) } })
     }
     private fun saveProgress() {
         val current = player ?: return

@@ -2,8 +2,6 @@ package local.freescene.freescene
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
 
 /** The same scale menu for decoded and embedded video, including D-pad focus. */
 class PlayerScaleControl(
@@ -33,10 +31,7 @@ class PlayerScaleControl(
                 .setNegativeButton(if (ru) "Отмена" else "Cancel", null)
                 .create().also { picker ->
                     picker.setOnDismissListener { dialog = null; if (TvWindow.isTv(activity)) requestFocus(); dismissed() }
-                    picker.show()
-                    picker.window?.setBackgroundDrawable(ColorDrawable(Color.rgb(25, 30, 38)))
-                    picker.listView.setSelection(mode)
-                    if (TvWindow.isTv(activity)) picker.listView.requestFocus()
+                    PlayerListDialog.show(picker, mode)
                 }
         }
     }

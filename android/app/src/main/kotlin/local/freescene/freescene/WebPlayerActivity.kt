@@ -49,6 +49,7 @@ open class WebPlayerActivity : Activity() {
     private var resumePosition = -1L
     private var resumeDuration = 0L
     private var resumeDialog: AlertDialog? = null
+    private var episodePicker: PlayerEpisodePicker? = null
     private val episodes = mutableListOf<Pair<String, String>>()
     private fun text(ru: String, en: String) = if (resources.configuration.locales[0].language == "ru") ru else en
     protected open fun makeWebView(): WebView = WebView(this)
@@ -174,17 +175,16 @@ open class WebPlayerActivity : Activity() {
         }
     }
     private fun chooseEpisode() {
+        if (episodePicker != null) return
         idleControls?.stop()
         val original = window.decorView.findFocus()
         val selected = episodes.indexOfFirst { it.second == source }
-        val dialog = AlertDialog.Builder(this).setTitle(text("Сезоны и серии", "Seasons and episodes"))
-            .setSingleChoiceItems(episodes.map { it.first }.toTypedArray(), selected) { d, i ->
-                source = episodes[i].second; d.dismiss(); load()
-            }.setNegativeButton(text("Отмена", "Cancel"), null).create()
-        dialog.setOnDismissListener { if (TvWindow.isTv(this)) original?.requestFocus(); TvWindow.applyPlayer(this); idleControls?.start() }
-        dialog.show()
-        if (TvWindow.isTv(this)) dialog.listView.requestFocus()
-        if (selected >= 0) dialog.listView.setSelection(selected)
+        episodePicker = PlayerEpisodePicker(this, episodes.map { it.first }, selected, series = true,
+            chosen = { source = episodes[it].second; load() }, cancelled = {},
+            dismissed = {
+                episodePicker = null
+                if (active) { if (TvWindow.isTv(this)) original?.requestFocus(); TvWindow.applyPlayer(this); idleControls?.start() }
+            }).also { it.show() }
     }
     @Suppress("SetJavaScriptEnabled")
     private fun load() {
@@ -349,7 +349,9 @@ open class WebPlayerActivity : Activity() {
         if (focused) { TvWindow.applyPlayer(this); if (resumeDialog == null) { idleControls?.start(); tvFocus?.restore() } } else idleControls?.stop()
     }
     override fun onStop() {
-        idleControls?.stop(); active = false
+        active = false
+        episodePicker?.dismiss(); episodePicker = null
+        idleControls?.stop()
         resumeDialog?.dismiss(); resumeDialog = null
         if (::scale.isInitialized) scale.dismiss()
         releaseWeb(); super.onStop()

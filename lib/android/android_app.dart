@@ -1653,25 +1653,34 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
                   child: FilledButton(
                     key: ValueKey('source-number-${value ?? 'all'}'),
                     autofocus: widget.runtime.tv && index == 0,
+                    style: FilledButton.styleFrom(padding: EdgeInsets.zero),
                     onPressed: () => Navigator.pop(context, value ?? -1),
-                    child: Row(
-                      children: [
-                        SizedBox(
-                          width: 28,
-                          child: value == selected
-                              ? const Icon(Icons.check)
-                              : null,
-                        ),
-                        Expanded(
-                          child: Text(
-                            value == null
-                                ? (season
-                                      ? tr('Все сезоны', 'All seasons')
-                                      : tr('Все серии', 'All episodes'))
-                                : '$label $value',
+                    child: SizedBox(
+                      height: 44,
+                      child: Row(
+                        children: [
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: Text(
+                              value == null
+                                  ? (season
+                                        ? tr('Все сезоны', 'All seasons')
+                                        : tr('Все серии', 'All episodes'))
+                                  : '$label $value',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                        ),
-                      ],
+                          SizedBox(
+                            width: 44,
+                            child: Center(
+                              child: value == selected
+                                  ? const Icon(Icons.check, size: 16)
+                                  : null,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 );
