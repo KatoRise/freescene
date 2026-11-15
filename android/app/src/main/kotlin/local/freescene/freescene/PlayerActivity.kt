@@ -36,9 +36,9 @@ open class PlayerActivity : Activity() {
     private var controlsSuspended = false
     private val back = RemoteBack()
     private var backPressed = false
-    private var backHidesControls = false
+    private var backPausesPlayback = false
     override fun onResume() { super.onResume(); TvWindow.applyPlayer(this); if (resumeDialog == null) idleControls?.start() }
-    override fun onPause() { watchedClock.sample(false); saveProgress(); idleControls?.stop(); super.onPause() }
+    override fun onPause() { watchedClock.sample(false); watchLaunch.sample(false); saveProgress(); idleControls?.stop(); super.onPause() }
     override fun onWindowFocusChanged(focused: Boolean) {
         super.onWindowFocusChanged(focused)
         if (focused) TvWindow.applyPlayer(this)
@@ -55,11 +55,29 @@ open class PlayerActivity : Activity() {
     private var position = 0L
     private var playing = true
     private val history by lazy { PlaybackHistory(this) }
+    private var torrentMetadata = JSONObject()
+    private val watchLaunch = WatchLaunchClock {
+        val metadata = WatchHistory.metadata(intent.getStringExtra("history"))
+        val key = if (torrentId != null) {
+            if (!metadata.has("title")) metadata.put("title", torrentMetadata.optString("title", torrentMetadata.optString("name")))
+            if (!metadata.has("provider")) {
+                val origin = torrentMetadata.optJSONObject("origin")
+                val label = origin?.optString("provider")?.takeIf { it.isNotBlank() }
+                    ?: if (origin?.optString("local") == "torrentFile") "Локальный .torrent" else "Magnet"
+                metadata.put("provider", label)
+            }
+            metadata.put("sourceType", "torrent")
+            videos.find { it.optInt("index") == fileIndex }?.let { metadata.put("subtitle", it.optString("name")).put("sizeBytes", it.optLong("size")) }
+            "torrent:$torrentId:$fileIndex"
+        } else WatchHistory.key(metadata, intent.getStringExtra("watchedSource") ?: intent.getStringExtra("playbackId"))
+        WatchHistory(this).record(key, metadata).also { if (it) TorrentEngine.syncWatchHistory(this, torrentId, fileIndex) }
+    }
     private val watchedClock = WatchedClock { WatchedHistory(this).set(intent.getStringExtra("watchedSource"), intent.getStringExtra("watchedTitle"), true) }
     private val watchTime = object : Runnable {
         override fun run() {
             if (stopped) return
             watchedClock.sample(player?.isPlaying == true)
+            watchLaunch.sample(player?.isPlaying == true)
             val waiting = !playbackFailed && (player == null || player?.playbackState == Player.STATE_BUFFERING || preparing)
             loadingTrack?.busy(waiting)
             if (waiting && !wasWaiting) view.showController()
@@ -106,6 +124,7 @@ open class PlayerActivity : Activity() {
                 if (task == null) { playbackFailed = true; status.text = "Загрузка недоступна. Вернитесь и повторите." }
                 else {
                     if (intent.getStringExtra("title").isNullOrBlank()) titleBar.text = task.optString("name", "FreeScene")
+                    torrentMetadata = task
                     val files = task.optJSONArray("files")
                     videos = (0 until (files?.length() ?: 0)).map { files!!.getJSONObject(it) }.filter { it.optBoolean("video") }
                     updateEpisodeControls()
@@ -148,6 +167,7 @@ open class PlayerActivity : Activity() {
         if (stopped || isFinishing) return
         preparing = true
         saveProgress()
+        if (fileIndex != file.getInt("index") || reset) watchLaunch.reset()
         fileIndex = file.getInt("index")
         updateEpisodeControls()
         if (reset) { position = 0; playing = true }
@@ -164,6 +184,8 @@ open class PlayerActivity : Activity() {
         super.onCreate(state)
         PlayerColors.restore(this)
         watchedClock.elapsed = state?.getLong("watchedElapsed") ?: 0
+        watchLaunch.elapsed = state?.getLong("watchLaunchElapsed") ?: 0
+        watchLaunch.recorded = state?.getBoolean("watchLaunchRecorded") ?: false
         if (!TorrentPolicy.id(torrentId) && !PlaybackPolicy.allowed(intent.getStringExtra("url"))) { finish(); return }
         position = state?.getLong("position") ?: 0
         fileIndex = state?.getInt("torrentFile", -1) ?: torrentId?.let { history.torrentFile(it) } ?: -1
@@ -409,7 +431,7 @@ open class PlayerActivity : Activity() {
                 if (lowRam) it.trackSelectionParameters = it.trackSelectionParameters.buildUpon()
                     .setMaxVideoSize(1920, 1080).build()
                 it.addListener(object : Player.Listener {
-                    override fun onIsPlayingChanged(isPlaying: Boolean) { watchedClock.sample(isPlaying) }
+                    override fun onIsPlayingChanged(isPlaying: Boolean) { watchedClock.sample(isPlaying); watchLaunch.sample(isPlaying) }
                     override fun onTracksChanged(tracks: Tracks) {
                         audioWarning = PlayerAudio.warning(tracks, resources.configuration.locales[0].language == "ru")
                         if (it.playbackState == Player.STATE_READY && it.playerError == null)
@@ -448,6 +470,7 @@ open class PlayerActivity : Activity() {
     }
     override fun onStop() {
         watchedClock.sample(false)
+        watchLaunch.sample(false)
         saveProgress()
         loadingTrack?.stop()
         stopped = true
@@ -475,19 +498,25 @@ open class PlayerActivity : Activity() {
         out.putString("playbackKey", playbackKey)
         if (::scale.isInitialized) out.putInt("scaleMode", scale.mode)
         out.putLong("watchedElapsed", watchedClock.elapsed)
+        out.putLong("watchLaunchElapsed", watchLaunch.elapsed)
+        out.putBoolean("watchLaunchRecorded", watchLaunch.recorded)
         super.onSaveInstanceState(out)
     }
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && !backPressed) {
                 backPressed = true
-                // Latch at key-down: the idle timer may hide controls during a long press.
-                backHidesControls = TvWindow.isTv(this) && ::view.isInitialized && view.isControllerFullyVisible
+                // One physical press has one action, even if playback changes before key-up.
+                backPausesPlayback = TvWindow.isTv(this) && !playbackFailed && player?.playbackState != Player.STATE_ENDED && (player?.playWhenReady ?: playing)
             }
             val handled = back.dispatch(event) {
-                if (backHidesControls) {
-                    idleControls?.hideNow()
-                    view.hideController()
+                if (backPausesPlayback) {
+                    playing = false
+                    player?.pause()
+                    watchedClock.sample(false); watchLaunch.sample(false)
+                    idleControls?.interact(); view.showController()
+                    prepareWaitingPlayButton()
+                    view.findViewById<View>(androidx.media3.ui.R.id.exo_play_pause)?.requestFocus()
                 } else finish()
             }
             if (event.action == KeyEvent.ACTION_UP) backPressed = false
