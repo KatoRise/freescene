@@ -43,7 +43,7 @@ class TorrentPlayerTest {
         val dialog = ShadowAlertDialog.getLatestAlertDialog()
         assertTrue(dialog.isShowing)
         assertEquals(2, dialog.listView.count)
-        assertEquals(0, dialog.listView.checkedItemPosition)
+        assertEquals(-1, dialog.listView.checkedItemPosition)
         assertNull(activity.media)
         assertTrue(activity.commands.contains("prepareStream"))
         dialog.listView.performItemClick(dialog.listView.getChildAt(1), 1, 1)
@@ -87,6 +87,20 @@ class TorrentPlayerTest {
                 next.performClick()
                 assertEquals("http://127.0.0.1:8000/fixture/1", activity.media)
             }
+            controller.pause().stop().destroy()
+        }
+    }
+    @Test fun historyReplayUsesExactFileInsteadOfLastViewedEpisode() {
+        val context = RuntimeEnvironment.getApplication()
+        PlaybackHistory(context).rememberTorrentFile("a".repeat(40), 0)
+        for (index in listOf(1, 9)) {
+            val controller = Robolectric.buildActivity(FixtureTorrentPlayer::class.java,
+                Intent(context, FixtureTorrentPlayer::class.java).putExtra("torrentId", "a".repeat(40))
+                    .putExtra("torrentFile", index).putExtra("historyReplay", true))
+                .create().start().resume().visible()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(10))
+            if (index == 1) assertEquals("http://127.0.0.1:8000/fixture/1", controller.get().media)
+            else assertNull(controller.get().media)
             controller.pause().stop().destroy()
         }
     }

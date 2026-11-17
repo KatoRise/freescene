@@ -8,7 +8,6 @@ import androidx.media3.datasource.DataSpec
 import androidx.media3.exoplayer.source.BundledExtractorsAdapter
 import androidx.media3.exoplayer.source.ProgressiveMediaExtractor
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
-import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ExtractorOutput
 
 /** Keep Media3 1.11.1 retries at the requested torrent range if open() fails.
@@ -19,7 +18,7 @@ internal object TorrentMediaSource {
     fun factory(upstream: DataSource.Factory) = ProgressiveMediaSource.Factory(
         DataSource.Factory { OpenedDataSource(upstream.createDataSource()) },
         ProgressiveMediaExtractor.Factory {
-            OpenedInputExtractor(BundledExtractorsAdapter(DefaultExtractorsFactory()))
+            OpenedInputExtractor(BundledExtractorsAdapter(PlayerExtractors()))
         },
     )
 

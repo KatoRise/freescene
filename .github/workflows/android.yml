@@ -1,9 +1,9 @@
 name: Android and TV
 on:
   push:
-    paths: ['lib/**', 'packages/**', 'test/**', 'android/**', 'pubspec.*', 'tools/build_android*.py', 'tools/test_android.py', 'tools/android-audio-dependencies.json', 'native/**', '.github/workflows/android.yml']
+    paths: ['lib/**', 'packages/**', 'test/**', 'android/**', 'pubspec.*', 'tools/build_android*.py', 'tools/test_android.py', 'tools/android-audio-dependencies.json', 'native/**', 'tests/native/history_network.cpp', '.github/workflows/android.yml']
   pull_request:
-    paths: ['lib/**', 'packages/**', 'test/**', 'android/**', 'pubspec.*', 'tools/build_android*.py', 'tools/test_android.py', 'tools/android-audio-dependencies.json', 'native/**', '.github/workflows/android.yml']
+    paths: ['lib/**', 'packages/**', 'test/**', 'android/**', 'pubspec.*', 'tools/build_android*.py', 'tools/test_android.py', 'tools/android-audio-dependencies.json', 'native/**', 'tests/native/history_network.cpp', '.github/workflows/android.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -40,6 +40,10 @@ jobs:
       - run: flutter analyze
       - run: flutter test
       - run: python3 tools/build_android.py --flavor mobile --preview
+      - name: History-owned network cache invariants
+        run: |
+          c++ -std=c++17 -fsanitize=undefined -Ibuild/android-native/vendor/json-include tests/native/history_network.cpp -o build/history-network-test
+          build/history-network-test
       - run: python3 tools/test_android.py
       - run: python3 tools/build_android.py --flavor tv --preview
       - uses: actions/cache/save@v4

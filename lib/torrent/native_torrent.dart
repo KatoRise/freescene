@@ -102,6 +102,8 @@ class TorrentController extends ChangeNotifier {
   String? error;
   bool loading = true;
   String? _pendingWatch;
+  int? _pendingWatchFile;
+  Future<void>? _refreshFlight;
   int _watchEpoch = 0;
   bool _startingVideo = false;
   VideoDownloads? videoDownloads;
@@ -166,6 +168,7 @@ class TorrentController extends ChangeNotifier {
     String? providerName,
     required String kind,
     Map<String, String> identity = const {},
+    Map<String, Object?> history = const {},
     int? webPlayer,
     List<Map<String, String>> webEpisodes = const [],
   }) async {
@@ -173,6 +176,7 @@ class TorrentController extends ChangeNotifier {
     _pendingWatch = null;
     await service.call('openProvider', {
       ...identity,
+      'history': history,
       'url': url,
       'title': title,
       'provider': provider,
@@ -183,9 +187,28 @@ class TorrentController extends ChangeNotifier {
     });
   }
 
+  Future<void> replayHistory(
+    String owner,
+    Map<String, Object?> history, {
+    Map<String, String> identity = const {},
+  }) async {
+    final reference =
+        await service.call('historyReplay', {'owner': owner}) as Map;
+    await refresh();
+    if (!tasks.any((t) => t.id == reference['id'])) await refresh();
+    await watch(
+      reference['id'] as String,
+      history: history,
+      identity: identity,
+      fileIndex: reference['file'] as int,
+    );
+  }
+
   Future<void> watch(
     String id, {
     Map<String, String> identity = const {},
+    Map<String, Object?> history = const {},
+    int? fileIndex,
   }) async {
     final epoch = ++_watchEpoch;
     _pendingWatch = null;
@@ -195,6 +218,13 @@ class TorrentController extends ChangeNotifier {
       final filename = (await _downloads()).completedFile(id);
       if (_disposed || _stopping || epoch != _watchEpoch) return;
       await service.call('openDownloadedVideo', {
+        'history': {
+          'title': task.title,
+          'provider': task.origin.localizedLabel(english?.call() == true),
+          'quality': task.quality,
+          'sizeBytes': task.total,
+          'sourceType': 'download',
+        },
         'filename': filename,
         'directory':
             ProviderSetup.current.downloadDirectory ??
@@ -205,11 +235,18 @@ class TorrentController extends ChangeNotifier {
     }
     await service.call('preparePlayer', {
       'id': id,
+      'history': {
+        'title': task.title,
+        'provider': task.origin.localizedLabel(english?.call() == true),
+        'sourceType': 'torrent',
+        ...history,
+      },
       'title': task.title,
       ...identity,
     });
     if (_disposed || epoch != _watchEpoch) return;
     _pendingWatch = id;
+    _pendingWatchFile = fileIndex;
     try {
       await command('prepareStream', {'id': id});
     } catch (_) {
@@ -234,7 +271,9 @@ class TorrentController extends ChangeNotifier {
               : 'В раздаче нет поддерживаемого видео',
         );
       }
-      final file = task.videos.length == 1
+      final file = _pendingWatchFile != null
+          ? task.videos.where((f) => f.index == _pendingWatchFile).firstOrNull
+          : task.videos.length == 1
           ? task.videos.single
           : chooseVideo == null
           ? task.videos.first
@@ -242,6 +281,9 @@ class TorrentController extends ChangeNotifier {
       if (_disposed || epoch != _watchEpoch) return;
       _pendingWatch = null;
       if (file == null) {
+        if (_pendingWatchFile != null) {
+          throw const FormatException('History file is unavailable');
+        }
         await service.call('cancelPreparedPlayer', {'id': task.id});
         return;
       }
@@ -297,7 +339,10 @@ class TorrentController extends ChangeNotifier {
     return result;
   }
 
-  Future<void> refresh() async {
+  Future<void> refresh() =>
+      _refreshFlight ??= _refresh().whenComplete(() => _refreshFlight = null);
+
+  Future<void> _refresh() async {
     if (_refreshing || _disposed || _stopping) return;
     _refreshing = true;
     try {

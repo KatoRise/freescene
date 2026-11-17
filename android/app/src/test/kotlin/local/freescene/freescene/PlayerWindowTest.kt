@@ -188,7 +188,26 @@ class PlayerWindowTest {
         assertTrue("The first tap must close the player", activity.isFinishing)
         controller.pause().stop().destroy()
     }
-    @Test fun tvBackHidesControlsThenExitsAndMobileBackExitsImmediately() {
+    @Test fun tvBackPausesRealPlayerIntentAndAlreadyPausedPlayerExits() {
+        assumeTrue(BuildConfig.FLAVOR == "tv")
+        for (initiallyPlaying in listOf(true, false)) {
+            val controller = controller(); val activity = controller.get()
+            val player = androidx.media3.exoplayer.ExoPlayer.Builder(activity).build()
+            player.playWhenReady = initiallyPlaying
+            PlayerActivity::class.java.getDeclaredField("player").apply { isAccessible = true }.set(activity, player)
+            activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK))
+            activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK))
+            assertFalse(player.playWhenReady)
+            assertEquals(!initiallyPlaying, activity.isFinishing)
+            if (initiallyPlaying) {
+                activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK))
+                activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK))
+                assertTrue(activity.isFinishing)
+            }
+            controller.pause().stop().destroy()
+        }
+    }
+    @Test fun tvBackPausesThenExitsAndMobileBackExitsImmediately() {
         val controller = controller()
         val activity = controller.get()
         assertTrue(activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK)))
@@ -196,14 +215,14 @@ class PlayerWindowTest {
         if (BuildConfig.FLAVOR == "tv") {
             assertFalse(activity.isFinishing)
             assertEquals(1, activity.starts)
-            assertFalse(activity.window.decorView.findViewWithTag<PlayerTitleView>("player-title").isShown)
+            assertTrue(activity.window.decorView.findViewWithTag<PlayerTitleView>("player-title").isShown)
             activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK))
             activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK))
         }
         assertTrue(activity.isFinishing)
         controller.destroy()
     }
-    @Test fun heldBackCannotBothHideControlsAndClosePlayerEvenIfIdleTimerExpires() {
+    @Test fun heldBackCannotBothPauseAndClosePlayerEvenIfIdleTimerExpires() {
         assumeTrue(BuildConfig.FLAVOR == "tv")
         val controller = controller(); val activity = controller.get()
         activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK))
@@ -215,12 +234,15 @@ class PlayerWindowTest {
         assertEquals(1, activity.starts)
         controller.pause().stop().destroy()
     }
-    @Test fun backFromAutoHiddenControlsCanStillExitAndCanceledBackDoesNotExit() {
+    @Test fun backFromHiddenControlsPausesAndCanceledBackDoesNothing() {
         assumeTrue(BuildConfig.FLAVOR == "tv")
         val controller = controller(); val activity = controller.get()
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(5))
         activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK))
         activity.dispatchKeyEvent(KeyEvent.changeFlags(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK), KeyEvent.FLAG_CANCELED))
+        assertFalse(activity.isFinishing)
+        activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK))
+        activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK))
         assertFalse(activity.isFinishing)
         activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK))
         activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK))
