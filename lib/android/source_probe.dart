@@ -2,8 +2,10 @@ import '../catalog/catalog_models.dart';
 import '../catalog/source_checks.dart';
 import 'android_runtime.dart';
 
-SourceChecks androidSourceChecks(CatalogRepository repository, {
-  int? Function()? season, int? Function()? episode,
+SourceChecks androidSourceChecks(
+  CatalogRepository repository, {
+  int? Function()? season,
+  int? Function()? episode,
 }) {
   var epoch = 0;
   return SourceChecks(

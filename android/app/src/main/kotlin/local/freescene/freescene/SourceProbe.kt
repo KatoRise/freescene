@@ -10,7 +10,6 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
-import java.security.KeyStore
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -38,11 +37,7 @@ object SourceProbe {
             var status = "timeout"
             try {
                 if (generation != epoch.get()) return@execute main.post { result.success("cancelled") }.let { }
-                val ca = File(directory, "ca.pem")
-                val store = KeyStore.getInstance("AndroidCAStore").apply { load(null) }
-                ca.writeText(store.aliases().toList().mapNotNull { store.getCertificate(it) }.joinToString("\n") {
-                    "-----BEGIN CERTIFICATE-----\n" + android.util.Base64.encodeToString(it.encoded, android.util.Base64.NO_WRAP).chunked(64).joinToString("\n") + "\n-----END CERTIFICATE-----"
-                })
+                val ca = TorrentCertificates.bundle(context)
                 handle = TorrentNative.create(JSONObject().put("profile", File(directory,"profile").path).put("downloads", File(directory,"buffer").path)
                     .put("lite",true).put("streamOnly",true).put("caBundle",ca.path).toString())
                 check(handle != 0L)
