@@ -39,7 +39,7 @@
     sink?.postMessage(JSON.stringify({
       position: Math.round(video.currentTime * 1000),
       duration: Math.round(video.duration * 1000), ended: video.ended,
-      playing: physicallyPlaying(video)
+      playing: physicallyPlaying(video), paused: video.paused
     }));
   };
   const refresh = () => {
@@ -83,11 +83,13 @@
     }
   };
   const command = value => {
-    if (!enabled || !value || !['toggle', 'settings', 'audio', 'text', 'speed'].includes(value.action)) return;
+    if (!enabled || !value || !['toggle', 'pause', 'settings', 'audio', 'text', 'speed'].includes(value.action)) return;
     const video = selected;
     if (video?.isConnected && visible(video)) {
       if (value.action === 'toggle') {
         if (video.paused) video.play().catch(() => {}); else video.pause();
+      } else if (value.action === 'pause') {
+        video.pause(); report(true);
       } else if (value.action === 'settings') {
         const tracks = (list, text) => Array.from(list || []).slice(0, 32).map((track, i) => ({
           label: (track.label || track.language || String(i + 1)).slice(0, 128),

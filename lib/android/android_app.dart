@@ -1,3 +1,6 @@
+import '../history/watch_history.dart';
+import '../history/watch_history_page.dart';
+import '../history/history_playback.dart';
 import '../catalog/watched.dart';
 
 import 'dart:async';
@@ -155,6 +158,8 @@ class AndroidApp extends StatefulWidget {
 }
 
 class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
+  late final watchHistory = WatchHistoryController(AndroidRuntime.channel);
+  final historyPage = GlobalKey<WatchHistoryPageState>();
   late final watched = WatchedController(AndroidRuntime.channel)..refresh();
 
   final navigator = GlobalKey<NavigatorState>();
@@ -178,7 +183,7 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
     ],
     verticalGroups: widget.runtime.tv
         ? const [
-            ['home', 'settings', 'about-brand'],
+            ['home', 'history', 'settings', 'about-brand'],
           ]
         : const [],
   );
@@ -288,7 +293,10 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) watched.refresh();
+    if (state == AppLifecycleState.resumed) {
+      watched.refresh();
+      if (screen == 'history') watchHistory.refresh();
+    }
     if (state == AppLifecycleState.resumed && !modal) {
       remote.restore(remote.last);
       offerUpdate();
@@ -300,6 +308,7 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    watchHistory.dispose();
     watched.dispose();
     ++playbackEpoch;
     trailerClient?.close();
@@ -400,7 +409,11 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
   }
 
   Future<void> back() async {
-    if (backBusy || modal) return;
+    if (backBusy || modal || watchHistory.removing) return;
+    if (screen == 'history' &&
+        historyPage.currentState?.exitSelection() == true) {
+      return;
+    }
     cancelPlayback();
     if (catalog.selected != null) {
       catalog.back();
@@ -586,12 +599,33 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> play(CatalogSource source) async {
+  Future<void> playHistory(WatchEntry entry) async {
+    if (entry.data['sourceType'] == 'torrent') {
+      await AndroidRuntime.channel.invokeMethod('torrentHistoryPlay', {
+        ...entry.watchedIdentity,
+        'owner': entry.id,
+        'series':
+            entry.data['catalogKind'] == 'series' || entry.episode != null,
+        'playerDark': preferences.appearance == AppAppearance.dark,
+      });
+    } else {
+      final match = await resolveHistorySource(entry, widget.repository);
+      if (!mounted || screen != 'history') return;
+      await play(match.source, historyTitle: match.title, replay: entry);
+    }
+  }
+
+  Future<void> play(
+    CatalogSource source, {
+    CatalogTitle? historyTitle,
+    WatchEntry? replay,
+  }) async {
     if (playing) return;
     final epoch = ++playbackEpoch;
     final target = remote.last;
-    final identity = watchedIdentity(catalog.selected, source);
-    final isSeries = catalog.selected?.kind == CatalogKind.series;
+    final selectedTitle = historyTitle ?? catalog.selected;
+    final identity = watchedIdentity(selectedTitle, source);
+    final isSeries = selectedTitle?.kind == CatalogKind.series;
     setState(() => playing = true);
     try {
       if (widget.play != null) {
@@ -599,8 +633,13 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
       } else {
         final resolved = await widget.repository.resolve(source);
         if (!mounted || epoch != playbackEpoch) return;
+        final historyMetadata = sourceWatchHistory(
+          selectedTitle,
+          resolved,
+          preferences.english,
+        );
         final title =
-            catalog.selected?.title(preferences.english) ?? source.row.title;
+            selectedTitle?.title(preferences.english) ?? source.row.title;
         if (resolved.row.isTorrent) {
           if (widget.runtime.tv) {
             await const AndroidTorrents().open(
@@ -608,6 +647,7 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
               title: title,
               playback: {
                 ...identity,
+                'history': historyMetadata,
                 'series': isSeries,
                 'playerDark': preferences.appearance == AppAppearance.dark,
               },
@@ -620,6 +660,7 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
               title: title,
               playback: {
                 ...identity,
+                'history': historyMetadata,
                 'series': isSeries,
                 'playerDark': preferences.appearance == AppAppearance.dark,
               },
@@ -636,12 +677,18 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
           await AndroidRuntime.channel.invokeMethod<void>('playWeb', {
             'playerDark': preferences.appearance == AppAppearance.dark,
             ...identity,
+            'history': historyMetadata,
             'series': isSeries,
             'provider': playback.provider,
             'providerName': source.row.provider.label,
             'title': title,
-            'url': playback.url.toString(),
-            'webPlayer': playback.webPlayer ?? 0,
+            'url': historyPlaybackUrl(
+              replay,
+              playback.url,
+              playback.episodes,
+            ).toString(),
+            'webPlayer':
+                replay?.data['webPlayer'] as int? ?? playback.webPlayer ?? 0,
             'episodes': playback.episodes.map((e) => e.toJson()).toList(),
           });
           return;
@@ -656,6 +703,7 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
           'url': url.toString(),
           'title': title,
           ...identity,
+          'history': historyMetadata,
           'series': isSeries,
           'playbackId':
               'source:${resolved.row.provider.name}:${resolved.row.id}',
@@ -664,6 +712,7 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
         });
       }
     } catch (_) {
+      if (replay != null) rethrow;
       if (mounted && epoch == playbackEpoch) {
         setState(() => playing = false);
         await message(
@@ -835,6 +884,16 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
                               Expanded(
                                 child: screen == 'settings'
                                     ? _settings()
+                                    : screen == 'history'
+                                    ? WatchHistoryPage(
+                                        key: historyPage,
+                                        mobile: !widget.runtime.tv,
+                                        controller: watchHistory,
+                                        english: preferences.english,
+                                        remote: remote,
+                                        onBack: () => unawaited(back()),
+                                        onPlay: playHistory,
+                                      )
                                     : screen == 'downloads'
                                     ? AndroidDownloads(
                                         focus: remote,
@@ -859,6 +918,70 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
       ),
     ),
   );
+
+  void history() {
+    cancelPlayback();
+    catalog.back();
+    setState(() => screen = 'history');
+    unawaited(watchHistory.refresh());
+    remote.restore('history-back');
+  }
+
+  Future<void> lists() async {
+    modal = true;
+    final current = screen == 'history'
+        ? 'history'
+        : screen == 'catalog'
+        ? (catalog.favoritesOnly
+              ? 'favorites'
+              : catalog.queueOnly
+              ? 'queue'
+              : '')
+        : '';
+    try {
+      final choice = await showModalBottomSheet<String>(
+        context: navigator.currentContext!,
+        showDragHandle: true,
+        isScrollControlled: true,
+        builder: (context) => SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            padding: EdgeInsets.zero,
+            children: [
+              for (final item in [
+                (
+                  'favorites',
+                  Icons.favorite_border,
+                  tr('Избранное', 'Favorites'),
+                ),
+                ('queue', Icons.playlist_play, tr('Очередь', 'Queue')),
+                ('history', Icons.history, tr('История', 'History')),
+              ])
+                ListTile(
+                  key: ValueKey('lists-${item.$1}'),
+                  leading: Icon(item.$2),
+                  title: Text(item.$3),
+                  trailing: current == item.$1 ? const Icon(Icons.check) : null,
+                  onTap: () => Navigator.pop(context, item.$1),
+                ),
+            ],
+          ),
+        ),
+      );
+      if (!mounted || choice == null) return;
+      if (choice == 'history') {
+        history();
+      } else {
+        await browse(
+          saved: choice == 'favorites',
+          queued: choice == 'queue',
+          search: '',
+        );
+      }
+    } finally {
+      modal = false;
+    }
+  }
 
   void downloads() {
     cancelPlayback();
@@ -904,6 +1027,13 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
           children: [
             item('home', Icons.home_outlined, tr('Домой', 'Home'), home),
             const Spacer(),
+            item(
+              'history',
+              Icons.history,
+              tr('История', 'History'),
+              history,
+              selected: screen == 'history',
+            ),
             item(
               'settings',
               Icons.settings_outlined,
@@ -953,18 +1083,10 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
                   settings,
                 ),
                 (
-                  'favorites',
-                  Icons.favorite_border,
-                  tr('Избранное', 'Favorites'),
-                  () =>
-                      unawaited(browse(saved: true, queued: false, search: '')),
-                ),
-                (
-                  'queue',
-                  Icons.playlist_play,
-                  tr('Очередь', 'Queue'),
-                  () =>
-                      unawaited(browse(queued: true, saved: false, search: '')),
+                  'lists',
+                  Icons.list_alt,
+                  tr('Списки', 'Lists'),
+                  () => unawaited(lists()),
                 ),
               ])
                 Expanded(
@@ -979,12 +1101,12 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
                     ),
                     selected:
                         item.$1 ==
-                        (screen == 'catalog'
-                            ? (catalog.favoritesOnly
-                                  ? 'favorites'
-                                  : catalog.queueOnly
-                                  ? 'queue'
-                                  : 'home')
+                        (screen == 'history' ||
+                                (screen == 'catalog' &&
+                                    catalog.localCollectionOnly)
+                            ? 'lists'
+                            : screen == 'catalog'
+                            ? 'home'
                             : screen),
                     onPressed: item.$4,
                     child: Tooltip(
@@ -1653,25 +1775,34 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
                   child: FilledButton(
                     key: ValueKey('source-number-${value ?? 'all'}'),
                     autofocus: widget.runtime.tv && index == 0,
+                    style: FilledButton.styleFrom(padding: EdgeInsets.zero),
                     onPressed: () => Navigator.pop(context, value ?? -1),
-                    child: Row(
-                      children: [
-                        SizedBox(
-                          width: 28,
-                          child: value == selected
-                              ? const Icon(Icons.check)
-                              : null,
-                        ),
-                        Expanded(
-                          child: Text(
-                            value == null
-                                ? (season
-                                      ? tr('Все сезоны', 'All seasons')
-                                      : tr('Все серии', 'All episodes'))
-                                : '$label $value',
+                    child: SizedBox(
+                      height: 44,
+                      child: Row(
+                        children: [
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: Text(
+                              value == null
+                                  ? (season
+                                        ? tr('Все сезоны', 'All seasons')
+                                        : tr('Все серии', 'All episodes'))
+                                  : '$label $value',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                        ),
-                      ],
+                          SizedBox(
+                            width: 44,
+                            child: Center(
+                              child: value == selected
+                                  ? const Icon(Icons.check, size: 16)
+                                  : null,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 );
