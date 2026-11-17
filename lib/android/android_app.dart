@@ -943,6 +943,7 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
   );
 
   void history() {
+    sourceChecks.stop();
     cancelPlayback();
     catalog.back();
     setState(() => screen = 'history');

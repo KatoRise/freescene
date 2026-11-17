@@ -48,6 +48,28 @@ class PlayerEpisodeSelectionTest {
         assertNull(ShadowAlertDialog.getLatestAlertDialog())
         controller.pause().stop().destroy()
     }
+    @Test fun exactHistoryFileTakesPriorityOverCatalogEpisodeHint() {
+        val app = RuntimeEnvironment.getApplication()
+        val controller = Robolectric.buildActivity(EpisodeSelectionActivity::class.java,
+            Intent(app, EpisodeSelectionActivity::class.java).putExtra("torrentId", "c".repeat(40))
+                .putExtra("series", true).putExtra("season", 1).putExtra("episode", 2)
+                .putExtra("historyReplay", true).putExtra("torrentFile", 0)).setup()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(0, controller.get().opened)
+        assertNull(ShadowAlertDialog.getLatestAlertDialog())
+        controller.pause().stop().destroy()
+    }
+    @Test fun missingHistoryFileDoesNotFallBackToAnotherEpisode() {
+        val app = RuntimeEnvironment.getApplication()
+        val controller = Robolectric.buildActivity(EpisodeSelectionActivity::class.java,
+            Intent(app, EpisodeSelectionActivity::class.java).putExtra("torrentId", "d".repeat(40))
+                .putExtra("series", true).putExtra("season", 1).putExtra("episode", 2)
+                .putExtra("historyReplay", true).putExtra("torrentFile", 9)).setup()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertNull(controller.get().opened)
+        assertNull(ShadowAlertDialog.getLatestAlertDialog())
+        controller.pause().stop().destroy()
+    }
     @Test fun missingEpisodeDoesNotSilentlyResumeTheOldFile() {
         val app = RuntimeEnvironment.getApplication()
         val id = "b".repeat(40)

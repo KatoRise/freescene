@@ -72,8 +72,11 @@ class MainActivity : FlutterActivity() {
                     "sourceProbe" -> SourceProbe.start(this, call, result)
                     "sourceProbeCancel" -> { SourceProbe.cancel(); result.success(null) }
                     "torrentOpen" -> { SourceProbe.cancel(); torrents.call(call, result) }
-                    "torrentAdd", "torrentPlay", "torrentImport", "torrentHistoryPlay" -> if (TvWindow.isTv(this)) torrents.call(call, result)
+                    "torrentAdd", "torrentPlay", "torrentImport", "torrentHistoryPlay" -> {
+                        SourceProbe.cancel()
+                        if (TvWindow.isTv(this)) torrents.call(call, result)
                         else downloadNotifications.run(result) { torrents.call(call, result) }
+                    }
                     "torrentCommand" -> if (!TvWindow.isTv(this) && call.argument<Map<String, Any?>>("request")?.get("method") == "resume") {
                         downloadNotifications.run(result) { torrents.call(call, result) }
                     } else torrents.call(call, result)
