@@ -2,6 +2,7 @@
 #import <WebKit/WebKit.h>
 #import "FSProviderPlayback.h"
 #import "FSWatched.h"
+#import "FSWatchHistory.h"
 #import "FSPlayerKeyboard.h"
 #import "FSWebFullscreen.h"
 #import "FSPlayerPresentation.h"
@@ -10,6 +11,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface FSProviderView : NSView <WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler>
 @property(nullable) WKWebView *web;
 @property(nullable) FSWatchedClock *watchedClock;
+@property(nullable) FSWatchLaunch *watchLaunch;
 @property NSString *providerName;
 @property FSRoundButton *playButton, *backButton, *forwardButton, *audioButton, *nativeButton, *fullButton;
 @property FSProgressSlider *position;
@@ -40,6 +42,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithURL:(NSURL *)url frame:(NSRect)frame player:(NSInteger)player episodes:(NSArray<NSDictionary *> *)episodes;
 - (instancetype)initWithURL:(NSURL *)url frame:(NSRect)frame player:(NSInteger)player episodes:(NSArray<NSDictionary *> *)episodes context:(nullable FSWebPlaybackContext *)context;
 - (void)applyAppearance;
+- (void)selectHistoryEpisode;
 - (void)stop;
 @end
 
@@ -145,7 +148,7 @@ NS_ASSUME_NONNULL_BEGIN
     [self.retryButton applyAppearance];
 }
 - (void)retry:(nullable id)sender {
-    [self.watchedClock sample:NO at:NSProcessInfo.processInfo.systemUptime];
+    [self.watchedClock sample:NO at:NSProcessInfo.processInfo.systemUptime];[self.watchLaunch sample:NO at:NSProcessInfo.processInfo.systemUptime];
     if(self.selectsPlayer && !self.contentRulesReady) return;
     self.message.stringValue=(fsEnglish ? @"Loading video…" : @"Загрузка видео…");
     self.lastPlaybackReport=0;self.playbackState=nil;self.position.busy=YES;self.nativeControls=YES;self.loadStarted=NSDate.timeIntervalSinceReferenceDate;
@@ -196,11 +199,21 @@ NS_ASSUME_NONNULL_BEGIN
     self.scaleMode=(FSPlayerScaleMode)item.tag;
     [self.web evaluateJavaScript:FSPlayerPresentationScript(self.scaleMode) completionHandler:nil];
 }
+- (void)selectHistoryEpisode {
+    if(!self.watchLaunch)return;
+    NSMutableDictionary *metadata=[self.watchLaunch.metadata mutableCopy];metadata[@"webPlayer"]=@(self.webPlayer);self.watchLaunch.metadata=metadata;
+    if(!self.episodes.count)return;
+    NSUInteger index=[self.episodes indexOfObjectPassingTest:^BOOL(NSDictionary *episode,NSUInteger i,BOOL *stop){return [episode[@"url"] isEqual:self.source.absoluteString];}];
+    if(index==NSNotFound)return;
+    metadata[@"webEpisodeIndex"]=@(index);metadata[@"subtitle"]=self.episodes[index][@"title"] ?: @"";
+    [metadata removeObjectForKey:@"episode"];[metadata removeObjectForKey:@"season"];
+    [self.watchLaunch select:[NSString stringWithFormat:@"%@:episode:%lu:%@",self.watchLaunch.baseKey,(unsigned long)index,metadata[@"subtitle"]] metadata:metadata];
+}
 - (void)episodeChanged:(NSMenuItem *)item {
     if(item.tag<0 || item.tag>=self.episodes.count) return;
     NSDictionary *episode=self.episodes[item.tag];NSURL *url=[NSURL URLWithString:episode[@"url"] ?: @""];
     if(!url || !self.context.sameTitle(url,self.source)) return;
-    self.source=url;self.window.title=episode[@"title"] ?: @"Video";[self retry:nil];
+    self.source=url;[self selectHistoryEpisode];self.window.title=episode[@"title"] ?: @"Video";[self retry:nil];
 }
 - (void)webView:(WKWebView *)web decidePolicyForNavigationAction:(WKNavigationAction *)action decisionHandler:(void (^)(WKNavigationActionPolicy))handler {
     NSURL *url=action.request.URL;
@@ -264,7 +277,7 @@ NS_ASSUME_NONNULL_BEGIN
         [self.playButton symbol:paused ? @"play.fill" : @"pause.fill" label:paused ? FSL(@"Продолжить") : FSL(@"Пауза")];
         self.message.stringValue=buffering ? FSL(@"Буферизация…") : [self officialLabel];
     } else if(self.lastPlaybackReport>0 || NSDate.timeIntervalSinceReferenceDate-self.loadStarted>10) {
-        [self.watchedClock sample:NO at:NSProcessInfo.processInfo.systemUptime];self.position.busy=NO;
+        [self.watchedClock sample:NO at:NSProcessInfo.processInfo.systemUptime];[self.watchLaunch sample:NO at:NSProcessInfo.processInfo.systemUptime];self.position.busy=NO;
         self.message.stringValue=fsEnglish ? @"Open provider controls to continue" : @"Откройте управление провайдера для продолжения";
     }
 }
@@ -279,10 +292,11 @@ NS_ASSUME_NONNULL_BEGIN
     NSInteger position=(NSInteger)p,duration=(NSInteger)d;
     self.timeLabel.stringValue=[NSString stringWithFormat:@"%ld:%02ld / %ld:%02ld",position/60,position%60,duration/60,duration%60];
     [self.watchedClock sample:[value[@"playing"] isEqual:@YES] at:self.lastPlaybackReport];
+    [self.watchLaunch sample:[value[@"playing"] isEqual:@YES] at:self.lastPlaybackReport];
     [self updatePlaybackControls];
 }
 - (void)stop {
-    [self.watchedClock sample:NO at:NSProcessInfo.processInfo.systemUptime];
+    [self.watchedClock sample:NO at:NSProcessInfo.processInfo.systemUptime];[self.watchLaunch sample:NO at:NSProcessInfo.processInfo.systemUptime];
     [self.playbackTimer invalidate];self.playbackTimer=nil;
     [self.web.configuration.userContentController removeScriptMessageHandlerForName:@"FreeSceneControls"];
     ++self.loadGeneration;[self.readiness invalidate];self.readiness=nil;

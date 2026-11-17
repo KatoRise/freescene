@@ -36,7 +36,6 @@ object SourceProbe {
             val directory = File(context.cacheDir, "source-probe").apply { deleteRecursively(); mkdirs() }
             var handle = 0L
             var status = "timeout"
-            val network = ProbeNetworkState.snapshot(context.filesDir, directory)
             try {
                 if (generation != epoch.get()) return@execute main.post { result.success("cancelled") }.let { }
                 val ca = File(directory, "ca.pem")
@@ -45,7 +44,6 @@ object SourceProbe {
                     "-----BEGIN CERTIFICATE-----\n" + android.util.Base64.encodeToString(it.encoded, android.util.Base64.NO_WRAP).chunked(64).joinToString("\n") + "\n-----END CERTIFICATE-----"
                 })
                 handle = TorrentNative.create(JSONObject().put("profile", File(directory,"profile").path).put("downloads", File(directory,"buffer").path)
-                    .put("networkState", network.path)
                     .put("lite",true).put("streamOnly",true).put("caBundle",ca.path).toString())
                 check(handle != 0L)
                 fun command(request: JSONObject): JSONObject {
@@ -87,7 +85,6 @@ object SourceProbe {
             finally {
                 connection?.disconnect(); connection=null
                 if(handle!=0L) TorrentNative.destroy(handle)
-                ProbeNetworkState.save(context.filesDir, network)
                 directory.deleteRecursively()
             }
             main.post { result.success(status) }

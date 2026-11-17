@@ -32,6 +32,11 @@ open class WebPlayerActivity : Activity() {
     private lateinit var scale: PlayerScaleControl
     private lateinit var controls: Button
     private lateinit var playPause: ImageButton
+    private val back = RemoteBack()
+    private var backPressed = false
+    private var backPausesPlayback = false
+    private var webPaused = true
+    private var pauseRequested = false
     private var resumed = false
     private var tvFocus: TvPlayerFocus? = null
     private var webSettings: WebPlayerSettings? = null
@@ -43,12 +48,21 @@ open class WebPlayerActivity : Activity() {
     private lateinit var source: String
     private var playerIndex = 0
     private var idleControls: TvIdleControls? = null
+    private val watchLaunch = WatchLaunchClock {
+        val metadata = WatchHistory.metadata(intent.getStringExtra("history"))
+        val index = episodes.indexOfFirst { it.second == source }
+        metadata.put("webPlayer", playerIndex)
+        if (index >= 0) { metadata.put("webEpisodeIndex", index); metadata.put("subtitle", episodes[index].first); metadata.remove("episode"); metadata.remove("season") }
+        val base = WatchHistory.key(metadata, intent.getStringExtra("watchedSource"))
+        WatchHistory(this).record("$base:episode:$index:${episodes.getOrNull(index)?.first.orEmpty()}", metadata).also { if (it) TorrentEngine.syncWatchHistory(this) }
+    }
     private val watchedClock = WatchedClock { WatchedHistory(this).set(intent.getStringExtra("watchedSource"), intent.getStringExtra("watchedTitle"), true) }
     private val history by lazy { PlaybackHistory(this) }
     private var preparedSource: String? = null
     private var resumePosition = -1L
     private var resumeDuration = 0L
     private var resumeDialog: AlertDialog? = null
+    private var episodePicker: PlayerEpisodePicker? = null
     private val episodes = mutableListOf<Pair<String, String>>()
     private fun text(ru: String, en: String) = if (resources.configuration.locales[0].language == "ru") ru else en
     protected open fun makeWebView(): WebView = WebView(this)
@@ -59,6 +73,8 @@ open class WebPlayerActivity : Activity() {
         super.onCreate(state)
         PlayerColors.restore(this)
         watchedClock.elapsed = state?.getLong("watchedElapsed") ?: 0
+        watchLaunch.elapsed = state?.getLong("watchLaunchElapsed") ?: 0
+        watchLaunch.recorded = state?.getBoolean("watchLaunchRecorded") ?: false
         provider = intent.getStringExtra("provider") ?: ""
         source = state?.getString("source") ?: intent.getStringExtra("url") ?: ""
         preparedSource = state?.getString("preparedSource")
@@ -101,7 +117,7 @@ open class WebPlayerActivity : Activity() {
             contentDescription = text("Воспроизведение / Пауза", "Play / Pause")
             setImageResource(android.R.drawable.ic_media_play)
             visibility = if (TvWindow.isTv(this@WebPlayerActivity)) View.VISIBLE else View.GONE
-            setOnClickListener { web?.evaluateJavascript("window.__freescenePlayback?.toggle();", null) }
+            setOnClickListener { pauseRequested = false; webPaused = !webPaused; web?.evaluateJavascript("window.__freescenePlayback?.toggle();", null) }
         }
         bar.addView(playPause, LinearLayout.LayoutParams(close.diameter, close.diameter))
         if (intent.getBooleanExtra("series", false) && episodes.size > 1) button(text("Серии", "Episodes")) { chooseEpisode() }
@@ -174,17 +190,16 @@ open class WebPlayerActivity : Activity() {
         }
     }
     private fun chooseEpisode() {
+        if (episodePicker != null) return
         idleControls?.stop()
         val original = window.decorView.findFocus()
         val selected = episodes.indexOfFirst { it.second == source }
-        val dialog = AlertDialog.Builder(this).setTitle(text("Сезоны и серии", "Seasons and episodes"))
-            .setSingleChoiceItems(episodes.map { it.first }.toTypedArray(), selected) { d, i ->
-                source = episodes[i].second; d.dismiss(); load()
-            }.setNegativeButton(text("Отмена", "Cancel"), null).create()
-        dialog.setOnDismissListener { if (TvWindow.isTv(this)) original?.requestFocus(); TvWindow.applyPlayer(this); idleControls?.start() }
-        dialog.show()
-        if (TvWindow.isTv(this)) dialog.listView.requestFocus()
-        if (selected >= 0) dialog.listView.setSelection(selected)
+        episodePicker = PlayerEpisodePicker(this, episodes.map { it.first }, selected, series = true,
+            chosen = { watchLaunch.reset(); source = episodes[it].second; load() }, cancelled = {},
+            dismissed = {
+                episodePicker = null
+                if (active) { if (TvWindow.isTv(this)) original?.requestFocus(); TvWindow.applyPlayer(this); idleControls?.start() }
+            }).also { it.show() }
     }
     @Suppress("SetJavaScriptEnabled")
     private fun load() {
@@ -246,10 +261,15 @@ open class WebPlayerActivity : Activity() {
                     }
                 }, playing = { playing ->
                     if (active && epoch == generation && browser === web) {
+                        if (playing && !pauseRequested) webPaused = false
                         watchedClock.sample(resumed && playing)
+                        watchLaunch.sample(resumed && playing)
                         playPause.setImageResource(if (playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play)
                     }
-                }, controls = { data -> if (active && epoch == generation && browser === web) webSettings?.received(data) }).install(browser, progressScript)
+                }, controls = { data -> if (active && epoch == generation && browser === web) webSettings?.received(data) },
+                    paused = { paused -> if (active && epoch == generation && browser === web) {
+                        if (paused) { webPaused = true; pauseRequested = false } else if (!pauseRequested) webPaused = false
+                    } }).install(browser, progressScript)
                 CookieManager.getInstance().setAcceptThirdPartyCookies(browser, true)
                 browser.setDownloadListener { _, _, _, _, _ -> /* External downloads are not a player action. */ }
                 browser.webChromeClient = object : WebChromeClient() {
@@ -322,6 +342,8 @@ open class WebPlayerActivity : Activity() {
     }
     private fun releaseWeb() {
         watchedClock.sample(false)
+        watchLaunch.sample(false)
+        webPaused = true; pauseRequested = false
         webSettings?.dismiss()
         ++generation; main.removeCallbacksAndMessages(null)
         hideCustom()
@@ -341,6 +363,7 @@ open class WebPlayerActivity : Activity() {
     override fun onPause() {
         resumed = false
         watchedClock.sample(false)
+        watchLaunch.sample(false)
         web?.evaluateJavascript("window.__freescenePlayback?.flush();", null)
         idleControls?.stop(); super.onPause()
     }
@@ -349,7 +372,9 @@ open class WebPlayerActivity : Activity() {
         if (focused) { TvWindow.applyPlayer(this); if (resumeDialog == null) { idleControls?.start(); tvFocus?.restore() } } else idleControls?.stop()
     }
     override fun onStop() {
-        idleControls?.stop(); active = false
+        active = false
+        episodePicker?.dismiss(); episodePicker = null
+        idleControls?.stop()
         resumeDialog?.dismiss(); resumeDialog = null
         if (::scale.isInitialized) scale.dismiss()
         releaseWeb(); super.onStop()
@@ -359,6 +384,8 @@ open class WebPlayerActivity : Activity() {
         if (::source.isInitialized) out.putString("source", source)
         out.putString("preparedSource", preparedSource)
         out.putLong("watchedElapsed", watchedClock.elapsed)
+        out.putLong("watchLaunchElapsed", watchLaunch.elapsed)
+        out.putBoolean("watchLaunchRecorded", watchLaunch.recorded)
         if (::scale.isInitialized) out.putInt("scaleMode", scale.mode)
         super.onSaveInstanceState(out)
     }
@@ -371,8 +398,24 @@ open class WebPlayerActivity : Activity() {
     }
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (idleControls?.dispatch(event) == true) return true
-        if (event.keyCode == KeyEvent.KEYCODE_BACK || event.keyCode == KeyEvent.KEYCODE_ESCAPE) {
-            if (event.action == KeyEvent.ACTION_UP) finish()
+        if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && !backPressed) {
+                backPressed = true; backPausesPlayback = TvWindow.isTv(this) && !webPaused
+            }
+            val handled = back.dispatch(event) {
+                if (backPausesPlayback) {
+                    webPaused = true; pauseRequested = true
+                    web?.evaluateJavascript("window.__freescenePlayback?.command({action:'pause'});", null)
+                    watchedClock.sample(false); watchLaunch.sample(false)
+                    playPause.setImageResource(android.R.drawable.ic_media_play)
+                    idleControls?.interact(); playPause.requestFocus()
+                } else finish()
+            }
+            if (event.action == KeyEvent.ACTION_UP) backPressed = false
+            return handled
+        }
+        if (event.keyCode == KeyEvent.KEYCODE_ESCAPE) {
+            if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) finish()
             return true
         }
         if (idleControls?.visible == true && resumeDialog == null) tvFocus?.restore()

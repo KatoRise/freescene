@@ -29,8 +29,7 @@ internal class WebPlayerSettings(
         opened()
         dialog = builder.setNegativeButton(text("Отмена", "Cancel"), null).create().also { next ->
             next.setOnDismissListener { if (dialog === next) { dialog = null; dismissed() } }
-            next.show()
-            if (TvWindow.isTv(activity)) next.listView?.requestFocus()
+            PlayerListDialog.show(next)
         }
     }
     fun menu() {

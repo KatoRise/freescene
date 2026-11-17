@@ -5,7 +5,6 @@ import android.app.AlertDialog
 import android.os.Handler
 import android.os.Looper
 import android.widget.ImageButton
-import android.widget.ArrayAdapter
 import android.view.ViewGroup
 import org.json.JSONObject
 import android.app.ActivityManager
@@ -37,9 +36,9 @@ open class PlayerActivity : Activity() {
     private var controlsSuspended = false
     private val back = RemoteBack()
     private var backPressed = false
-    private var backHidesControls = false
+    private var backPausesPlayback = false
     override fun onResume() { super.onResume(); TvWindow.applyPlayer(this); if (resumeDialog == null) idleControls?.start() }
-    override fun onPause() { watchedClock.sample(false); saveProgress(); idleControls?.stop(); super.onPause() }
+    override fun onPause() { watchedClock.sample(false); watchLaunch.sample(false); saveProgress(); idleControls?.stop(); super.onPause() }
     override fun onWindowFocusChanged(focused: Boolean) {
         super.onWindowFocusChanged(focused)
         if (focused) TvWindow.applyPlayer(this)
@@ -56,11 +55,29 @@ open class PlayerActivity : Activity() {
     private var position = 0L
     private var playing = true
     private val history by lazy { PlaybackHistory(this) }
+    private var torrentMetadata = JSONObject()
+    private val watchLaunch = WatchLaunchClock {
+        val metadata = WatchHistory.metadata(intent.getStringExtra("history"))
+        val key = if (torrentId != null) {
+            if (!metadata.has("title")) metadata.put("title", torrentMetadata.optString("title", torrentMetadata.optString("name")))
+            if (!metadata.has("provider")) {
+                val origin = torrentMetadata.optJSONObject("origin")
+                val label = origin?.optString("provider")?.takeIf { it.isNotBlank() }
+                    ?: if (origin?.optString("local") == "torrentFile") "Локальный .torrent" else "Magnet"
+                metadata.put("provider", label)
+            }
+            metadata.put("sourceType", "torrent")
+            videos.find { it.optInt("index") == fileIndex }?.let { metadata.put("subtitle", it.optString("name")).put("sizeBytes", it.optLong("size")) }
+            "torrent:$torrentId:$fileIndex"
+        } else WatchHistory.key(metadata, intent.getStringExtra("watchedSource") ?: intent.getStringExtra("playbackId"))
+        WatchHistory(this).record(key, metadata).also { if (it) TorrentEngine.syncWatchHistory(this, torrentId, fileIndex) }
+    }
     private val watchedClock = WatchedClock { WatchedHistory(this).set(intent.getStringExtra("watchedSource"), intent.getStringExtra("watchedTitle"), true) }
     private val watchTime = object : Runnable {
         override fun run() {
             if (stopped) return
             watchedClock.sample(player?.isPlaying == true)
+            watchLaunch.sample(player?.isPlaying == true)
             val waiting = !playbackFailed && (player == null || player?.playbackState == Player.STATE_BUFFERING || preparing)
             loadingTrack?.busy(waiting)
             if (waiting && !wasWaiting) view.showController()
@@ -87,7 +104,8 @@ open class PlayerActivity : Activity() {
     private val torrentId get() = intent.getStringExtra("torrentId")
     private var fileIndex = -1
     private var videos = emptyList<JSONObject>()
-    private var chooser: AlertDialog? = null
+    private var chooser: PlayerEpisodePicker? = null
+    private var episodeNavigation: PlayerEpisodeNavigation? = null
     private var stopped = true
     private var preparing = false
     private var audioWarning: String? = null
@@ -106,6 +124,7 @@ open class PlayerActivity : Activity() {
                 if (task == null) { playbackFailed = true; status.text = "Загрузка недоступна. Вернитесь и повторите." }
                 else {
                     if (intent.getStringExtra("title").isNullOrBlank()) titleBar.text = task.optString("name", "FreeScene")
+                    torrentMetadata = task
                     val files = task.optJSONArray("files")
                     videos = (0 until (files?.length() ?: 0)).map { files!!.getJSONObject(it) }.filter { it.optBoolean("video") }
                     updateEpisodeControls()
@@ -118,11 +137,13 @@ open class PlayerActivity : Activity() {
                         player == null && !preparing && chooser == null && resumeDialog == null -> {
                             if (episodeSelectionPending) {
                                 episodeSelectionPending = false
-                                if (intent.getIntExtra("episode", -1) >= 0) {
+                                if (!intent.getBooleanExtra("historyReplay", false) && intent.getIntExtra("episode", -1) >= 0) {
                                     fileIndex = TorrentEpisode.index(videos, intent.getIntExtra("season", -1), intent.getIntExtra("episode", -1)) ?: -1
                                 }
                             }
-                            if (fileIndex >= 0 || (videos.size == 1 && intent.getIntExtra("episode", -1) < 0)) openFile(videos.find { it.optInt("index") == fileIndex } ?: videos.first(), reset = false)
+                            if (intent.getBooleanExtra("historyReplay", false) && videos.none { it.optInt("index") == fileIndex }) {
+                                playbackFailed = true; status.text = "Файл из истории недоступен"
+                            } else if (fileIndex >= 0 || (videos.size == 1 && intent.getIntExtra("episode", -1) < 0)) openFile(videos.find { it.optInt("index") == fileIndex } ?: videos.first(), reset = false)
                             else chooseEpisode()
                         }
                         player?.playbackState == Player.STATE_BUFFERING -> status.text = "Буферизация · ↓ ${task.optLong("rate") / 1024} КиБ/с · Сиды: ${task.optInt("seeds")} · Пиры: ${task.optInt("peers")}"
@@ -138,32 +159,26 @@ open class PlayerActivity : Activity() {
         if (videos.isEmpty() || chooser != null) return
         val initialSelection = player == null
         suspendControls()
-        val labels = videos.map { it.optString("name") }
-        val adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_single_choice, labels) {
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View = super.getView(position, convertView, parent).apply {
-                (this as TextView).setTextColor(PlayerColors.text)
-                maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
-            }
-        }
-        val selected = videos.indexOfFirst { it.optInt("index") == fileIndex }.coerceAtLeast(0)
-        chooser = AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-            .setTitle("Сезоны и серии")
-            .setSingleChoiceItems(adapter, selected) { dialog, which -> dialog.dismiss(); openFile(videos[which]) }
-            .setNegativeButton("Назад") { _, _ -> if (player == null) finish() }
-            .create().also { dialog ->
-                dialog.setOnCancelListener { if (player == null) finish() }
-                dialog.setOnDismissListener { chooser = null; resumeControls(); if (TvWindow.isTv(this)) { if (initialSelection) view.findViewById<View>(androidx.media3.ui.R.id.exo_play_pause)?.requestFocus() else episodes.requestFocus() } }
-                dialog.show()
-                dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(PlayerColors.panel))
-                dialog.listView.setSelection(selected)
-                if (TvWindow.isTv(this)) dialog.listView.requestFocus()
-            }
+        val files = videos.toList()
+        val selected = files.indexOfFirst { it.optInt("index") == fileIndex }
+        chooser = PlayerEpisodePicker(this, files.map { it.optString("name") }, selected,
+            series = intent.getBooleanExtra("series", false),
+            chosen = { openFile(files[it]) },
+            cancelled = { if (player == null) finish() },
+            dismissed = {
+                chooser = null; resumeControls()
+                if (!stopped && TvWindow.isTv(this)) {
+                    if (initialSelection) view.findViewById<View>(androidx.media3.ui.R.id.exo_play_pause)?.requestFocus() else episodes.requestFocus()
+                }
+            }).also { it.show() }
     }
     private fun openFile(file: JSONObject, reset: Boolean = true) {
         if (stopped || isFinishing) return
         preparing = true
         saveProgress()
+        if (fileIndex != file.getInt("index") || reset) watchLaunch.reset()
         fileIndex = file.getInt("index")
+        updateEpisodeControls()
         if (reset) { position = 0; playing = true }
         player?.release(); player = null; view.player = null; playbackReady = false
         status.text = "Буферизация…"
@@ -178,10 +193,12 @@ open class PlayerActivity : Activity() {
         super.onCreate(state)
         PlayerColors.restore(this)
         watchedClock.elapsed = state?.getLong("watchedElapsed") ?: 0
+        watchLaunch.elapsed = state?.getLong("watchLaunchElapsed") ?: 0
+        watchLaunch.recorded = state?.getBoolean("watchLaunchRecorded") ?: false
         if (!TorrentPolicy.id(torrentId) && !PlaybackPolicy.allowed(intent.getStringExtra("url"))) { finish(); return }
         episodeSelectionPending = state == null
         position = state?.getLong("position") ?: 0
-        fileIndex = state?.getInt("torrentFile", -1) ?: torrentId?.let { history.torrentFile(it) } ?: -1
+        fileIndex = state?.getInt("torrentFile", -1) ?: if (intent.hasExtra("torrentFile")) intent.getIntExtra("torrentFile", -1) else torrentId?.let { history.torrentFile(it) } ?: -1
         playing = state?.getBoolean("playing") ?: true
         playbackKey = state?.getString("playbackKey")
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -197,6 +214,7 @@ open class PlayerActivity : Activity() {
                 controllerAutoShow = false
             }
         }
+        episodeNavigation = PlayerEpisodeNavigation(view)
         settings = PlayerSettings(this, opened = { suspendControls() }, dismissed = { resumeControls() },
             scaling = { scale.button.performClick() }) {
             view.player
@@ -260,7 +278,7 @@ open class PlayerActivity : Activity() {
             loadingTrack = PlayerLoadingTrack(this)
         }
         episodes = PlayerCloseButton(this).apply {
-            contentDescription = "Сезоны и серии"
+            contentDescription = if (resources.configuration.locales[0].language == "ru") "Серии" else "Episodes"
             setImageResource(android.R.drawable.ic_menu_sort_by_size)
             visibility = View.GONE
             setOnClickListener { chooseEpisode() }
@@ -390,16 +408,10 @@ open class PlayerActivity : Activity() {
     }
     private fun updateEpisodeControls() {
         val series = intent.getBooleanExtra("series", false) && videos.size > 1
-        view.setShowPreviousButton(series)
-        view.setShowNextButton(series)
         val index = videos.indexOfFirst { it.optInt("index") == fileIndex }
-        for ((id, offset) in listOf(androidx.media3.ui.R.id.exo_prev to -1, androidx.media3.ui.R.id.exo_next to 1)) {
-            view.findViewById<View>(id)?.apply {
-                isEnabled = series && index >= 0 && index + offset in videos.indices
-                alpha = if (isEnabled) 1f else .35f
-                setOnClickListener { videos.getOrNull(index + offset)?.let { openFile(it, reset = true) } }
-            }
-        }
+        episodeNavigation?.update(series, index > 0, index >= 0 && index + 1 in videos.indices,
+            previous = { videos.getOrNull(index - 1)?.let { openFile(it, reset = true) } },
+            next = { videos.getOrNull(index + 1)?.let { openFile(it, reset = true) } })
     }
     private fun saveProgress() {
         val current = player ?: return
@@ -423,13 +435,13 @@ open class PlayerActivity : Activity() {
         }
         audioWarning = null
         player = ExoPlayer.Builder(this, PlayerAudio.renderers(this)).setLoadControl(load)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(this, http)))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(this, http), PlayerExtractors()))
             .setSeekBackIncrementMs(10000).setSeekForwardIncrementMs(10000).build().also {
                 view.player = it
                 if (lowRam) it.trackSelectionParameters = it.trackSelectionParameters.buildUpon()
                     .setMaxVideoSize(1920, 1080).build()
                 it.addListener(object : Player.Listener {
-                    override fun onIsPlayingChanged(isPlaying: Boolean) { watchedClock.sample(isPlaying) }
+                    override fun onIsPlayingChanged(isPlaying: Boolean) { watchedClock.sample(isPlaying); watchLaunch.sample(isPlaying) }
                     override fun onTracksChanged(tracks: Tracks) {
                         audioWarning = PlayerAudio.warning(tracks, resources.configuration.locales[0].language == "ru")
                         if (it.playbackState == Player.STATE_READY && it.playerError == null)
@@ -468,6 +480,7 @@ open class PlayerActivity : Activity() {
     }
     override fun onStop() {
         watchedClock.sample(false)
+        watchLaunch.sample(false)
         saveProgress()
         loadingTrack?.stop()
         stopped = true
@@ -495,19 +508,25 @@ open class PlayerActivity : Activity() {
         out.putString("playbackKey", playbackKey)
         if (::scale.isInitialized) out.putInt("scaleMode", scale.mode)
         out.putLong("watchedElapsed", watchedClock.elapsed)
+        out.putLong("watchLaunchElapsed", watchLaunch.elapsed)
+        out.putBoolean("watchLaunchRecorded", watchLaunch.recorded)
         super.onSaveInstanceState(out)
     }
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && !backPressed) {
                 backPressed = true
-                // Latch at key-down: the idle timer may hide controls during a long press.
-                backHidesControls = TvWindow.isTv(this) && ::view.isInitialized && view.isControllerFullyVisible
+                // One physical press has one action, even if playback changes before key-up.
+                backPausesPlayback = TvWindow.isTv(this) && !playbackFailed && player?.playbackState != Player.STATE_ENDED && (player?.playWhenReady ?: playing)
             }
             val handled = back.dispatch(event) {
-                if (backHidesControls) {
-                    idleControls?.hideNow()
-                    view.hideController()
+                if (backPausesPlayback) {
+                    playing = false
+                    player?.pause()
+                    watchedClock.sample(false); watchLaunch.sample(false)
+                    idleControls?.interact(); view.showController()
+                    prepareWaitingPlayButton()
+                    view.findViewById<View>(androidx.media3.ui.R.id.exo_play_pause)?.requestFocus()
                 } else finish()
             }
             if (event.action == KeyEvent.ACTION_UP) backPressed = false

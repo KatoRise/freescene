@@ -1,4 +1,5 @@
 #import "FSNativeBridge.h"
+#import "FSWatchHistory.h"
 #import "FSPlayerGeometry.h"
 #import "FSPlayerKeyboard.h"
 #import "FSPlayerPresentation.h"
@@ -161,6 +162,7 @@ static NSString *FSL(NSString *ru) {
 @property NSUInteger requestGeneration;
 @property FSProviderView *providerView;
 @property FSWatchedClock *watchedClock;
+@property FSWatchLaunch *watchLaunch;
 @property(copy) void (^playbackPauseChanged)(NSString *, BOOL);
 @property(copy) void (^playbackClosed)(NSString *);
 @property(copy) void (^retryRequested)(NSString *);
@@ -320,7 +322,8 @@ static NSString *FSL(NSString *ru) {
 }
 - (void)open:(NSString *)location title:(NSString *)title task:(NSString *)task userAgent:(NSString *)userAgent referrer:(NSString *)referrer {
     [self.watchedClock sample:NO at:NSProcessInfo.processInfo.systemUptime];
-    if(!(task && [task isEqual:self.taskID]) && !(location.length && [location isEqual:self.location]))self.watchedClock=nil;
+    if(!(task && [task isEqual:self.taskID]) && !(location.length && [location isEqual:self.location])) { self.watchedClock=nil;self.watchLaunch=nil; }
+    [self.watchLaunch sample:NO at:NSProcessInfo.processInfo.systemUptime];
     if(self.sourceWillChange)self.sourceWillChange();
     self.loadingTrailer=NO;self.retryMedia=nil;self.mediaUserAgent=userAgent;self.mediaReferrer=referrer;
     self.play.enabled=YES;self.retryButton.enabled=YES;
@@ -437,6 +440,7 @@ static NSString *FSL(NSString *ru) {
     [self applyScale];
     BOOL playing=state==libvlc_Playing;
     [self.watchedClock sample:playing && !self.userPaused && !self.seeking at:NSProcessInfo.processInfo.systemUptime];
+    [self.watchLaunch sample:playing && !self.userPaused && !self.seeking at:NSProcessInfo.processInfo.systemUptime];
     [self.play symbol:self.userPaused ? @"play.fill" : @"pause.fill" label:self.userPaused ? FSL(@"Продолжить") : FSL(@"Пауза")];
     if (playing) self.started=YES;
     if (self.location.length) self.status.stringValue=state==libvlc_Error ? FSL(@"Ошибка воспроизведения или ожидания данных. Повторите попытку.") : state==libvlc_Ended ? FSL(@"Воспроизведение завершено") : state==libvlc_Buffering || state==libvlc_Opening ? FSL(@"Буферизация…") : playing ? @"" : FSL(@"Пауза");
@@ -464,7 +468,7 @@ static NSString *FSL(NSString *ru) {
 - (void)windowDidResignKey:(NSNotification *)note { [self.video cancelInput]; }
 - (void)windowDidFailToExitFullScreen:(NSWindow *)window { [self.providerView.fullscreen finishEscape]; }
 - (void)windowWillClose:(NSNotification *)note {
-    self.watchedClock=nil;
+    self.watchedClock=nil;self.watchLaunch=nil;
     if(self.sourceWillChange)self.sourceWillChange();
     self.loadingTrailer=NO;self.retryMedia=nil;
     [self endProvider];
@@ -551,7 +555,7 @@ static FSNativeBridge *bridge;
     if (!self.engine) {
         NSString *profile=NSProcessInfo.processInfo.environment[@"FREESCENE_DATA"] ?: [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/FreeScene"];
         NSString *downloads=FSDownloadsPath();
-        NSDictionary *config=@{@"profile":[profile stringByAppendingPathComponent:@"torrents"],@"downloads":downloads,@"isolated":@([NSProcessInfo.processInfo.environment[@"FREESCENE_TEST_MODE"] isEqualToString:@"1"])};
+        NSDictionary *config=@{@"profile":[profile stringByAppendingPathComponent:@"torrents"],@"downloads":downloads,@"historyCache":[profile stringByAppendingPathComponent:@"watch-history-network"],@"historyIds":[FSWatchSnapshot()[@"entries"] valueForKey:@"id"] ?: @[],@"isolated":@([NSProcessInfo.processInfo.environment[@"FREESCENE_TEST_MODE"] isEqualToString:@"1"])};
         NSData *data=[NSJSONSerialization dataWithJSONObject:config options:0 error:nil]; self.engine=fs_engine_create([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].UTF8String);
     }
     NSData *data=[NSJSONSerialization dataWithJSONObject:request options:0 error:nil];
@@ -590,7 +594,7 @@ static FSNativeBridge *bridge;
                 dispatch_async(dispatch_get_main_queue(),^{
                     if(!s.player.window.visible || s.player.requestGeneration!=generation)return;
                     if(reply[@"error"])s.player.playbackError=reply[@"error"];
-                    else { [s.player open:reply[@"result"][@"url"] title:name task:task];s.player.currentFile=index; }
+                    else { [s.player open:reply[@"result"][@"url"] title:name task:task];s.player.currentFile=index;[s historyFile:s.player index:index]; }
                 });
             });
         };
@@ -692,7 +696,47 @@ static FSNativeBridge *bridge;
         }];
     });
 }
+- (BOOL)syncHistoryCache {
+    NSDictionary *snapshot=FSWatchSnapshot();if(!snapshot)return NO;
+    NSArray *ids=[snapshot[@"entries"] valueForKey:@"id"];
+    if(self.engine) {
+        NSString *request=[[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:@{@"method":@"historyCacheSync",@"ids":ids} options:0 error:nil] encoding:NSUTF8StringEncoding];
+        char *raw=fs_engine_command(self.engine,request.UTF8String);if(!raw)return NO;
+        NSData *data=[[NSString stringWithUTF8String:raw] dataUsingEncoding:NSUTF8StringEncoding];fs_engine_free(raw);
+        NSDictionary *reply=[NSJSONSerialization JSONObjectWithData:data options:0 error:nil];return reply && !reply[@"error"];
+    }
+    NSString *root=[FSWatchHistoryPath().stringByDeletingLastPathComponent stringByAppendingPathComponent:@"watch-history-network"];
+    if(![NSFileManager.defaultManager fileExistsAtPath:root])return YES;
+    NSError *error=nil;NSArray *names=[NSFileManager.defaultManager contentsOfDirectoryAtPath:root error:&error];if(error)return NO;
+    for(NSString *name in names)if(![ids containsObject:name] && ![NSFileManager.defaultManager removeItemAtPath:[root stringByAppendingPathComponent:name] error:nil])return NO;
+    if(!ids.count)[NSFileManager.defaultManager removeItemAtPath:root error:nil];return YES;
+}
+- (void)historyFile:(FSPlayer *)player index:(NSInteger)index {
+    FSWatchLaunch *launch=player.watchLaunch;if(!launch)return;
+    NSMutableDictionary *metadata=[launch.metadata mutableCopy];metadata[@"sourceType"]=@"torrent";
+    for(NSDictionary *file in player.torrentFiles)if([file[@"index"] integerValue]==index) {
+        metadata[@"subtitle"]=file[@"name"] ?: @"";metadata[@"sizeBytes"]=file[@"size"] ?: @0;break;
+    }
+    [launch select:[NSString stringWithFormat:@"torrent:%@:%ld",player.taskID,(long)index] metadata:metadata];
+}
 - (void)trackPlayer:(FSPlayer *)player arguments:(NSDictionary *)args {
+    player.watchLaunch=nil;
+    NSMutableDictionary *metadata=FSWatchClean(args[@"history"]);
+    if(metadata[@"title"] && metadata[@"sourceType"]) {
+        FSWatchLaunch *launch=[FSWatchLaunch new];
+        NSString *base=[args[@"watchedSource"] isKindOfClass:NSString.class] ? args[@"watchedSource"] : nil;
+        if(!base) { NSMutableArray *parts=[NSMutableArray new];for(NSString *key in @[@"sourceType",@"title",@"subtitle",@"provider",@"quality"])[parts addObject:metadata[key] ?: @""];base=[parts componentsJoinedByString:@"|"]; }
+        launch.baseKey=base;[launch select:base metadata:metadata];player.watchLaunch=launch;
+        __weak FSNativeBridge *weak=self;__weak FSPlayer *weakPlayer=player;
+        launch.didRecord=^{
+            FSNativeBridge *s=weak;FSPlayer *p=weakPlayer;if(!s || !p)return;
+            NSString *task=p.taskID;NSInteger file=p.currentFile;
+            dispatch_async(s.queue,^{
+                if(![s syncHistoryCache])return;
+                if(task.length && file>=0 && s.engine)[s request:@{@"method":@"historyCacheRecord",@"id":task,@"file":@(file)}];
+            });
+        };
+    }
     player.watchedClock=nil;
     if([args[@"watchedSource"] isKindOfClass:NSString.class] && [args[@"watchedTitle"] isKindOfClass:NSString.class]) {
         FSWatchedClock *clock=[FSWatchedClock new];clock.source=args[@"watchedSource"];clock.title=args[@"watchedTitle"];player.watchedClock=clock;
@@ -706,6 +750,12 @@ static FSNativeBridge *bridge;
     if([call.method isEqual:@"requestAppPermissionsIfNeeded"] || [call.method isEqual:@"requestAppPermissions"]) {
         if(!self.permissions)self.permissions=[FSPermissions new];
         [self.permissions requestAgain:[call.method isEqual:@"requestAppPermissions"] completion:^(NSDictionary *value){result(value);}];return;
+    }
+    if ([call.method isEqual:@"watchHistorySnapshot"]) { result(FSWatchSnapshot() ?: [FlutterError errorWithCode:@"history_read" message:@"Could not read history" details:nil]);return; }
+    if ([call.method isEqual:@"watchHistoryRemove"]) {
+        NSNumber *removed=FSWatchRemove(call.arguments[@"ids"]);
+        if(!removed) { result([FlutterError errorWithCode:@"history_remove" message:@"Could not remove history entries" details:nil]);return; }
+        dispatch_async(self.queue,^{ BOOL cleaned=[self syncHistoryCache];dispatch_async(dispatch_get_main_queue(),^{ result(cleaned ? @{@"removed":removed} : [FlutterError errorWithCode:@"history_cache" message:@"Could not remove history cache" details:nil]); }); });return;
     }
     if ([call.method isEqual:@"watchedSnapshot"]) { result(FSWatchedSnapshot());return; }
     if ([call.method isEqual:@"setWatched"]) {
@@ -774,6 +824,8 @@ static FSNativeBridge *bridge;
         }
         [self trackPlayer:player arguments:call.arguments];
         player.providerView.watchedClock=player.watchedClock;
+        player.providerView.watchLaunch=player.watchLaunch;
+        [player.providerView selectHistoryEpisode];
         player.providerView.providerName=call.arguments[@"providerName"] ?: provider;
         result(nil); return;
     }
@@ -842,7 +894,11 @@ static FSNativeBridge *bridge;
            ![NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&directory] || directory) {
             result([FlutterError errorWithCode:@"download_missing" message:FSL(@"Скачанный файл не найден") details:nil]); return;
         }
-        [[self ensurePlayer] open:path title:call.arguments[@"title"] ?: filename task:nil]; result(nil); return;
+        FSPlayer *player=[self ensurePlayer];[player open:path title:call.arguments[@"title"] ?: filename task:nil];
+        [self trackPlayer:player arguments:call.arguments];
+        NSMutableDictionary *metadata=[player.watchLaunch.metadata mutableCopy];metadata[@"subtitle"]=filename;metadata[@"downloadDirectory"]=call.arguments[@"directory"];
+        [player.watchLaunch select:[NSString stringWithFormat:@"download:%@:%@",call.arguments[@"directory"],FSWatchHash(filename)] metadata:metadata];
+        result(nil); return;
     }
     if ([call.method isEqualToString:@"openVideo"]) { [FSNativeBridge openLocalVideo]; result(nil); return; }
     if ([call.method isEqualToString:@"chooseTorrent"]) {
@@ -878,6 +934,7 @@ static FSNativeBridge *bridge;
                 if ([call.method isEqualToString:@"stream"] && self.player.window.visible && self.player.requestGeneration==streamGeneration) {
                     [self.player open:reply[@"result"][@"url"] title:args[@"title"] ?: FSL(@"Плеер") task:args[@"id"]];
                     self.player.currentFile=[args[@"file"] integerValue];
+                    [self historyFile:self.player index:self.player.currentFile];
                 }
                 if ([call.method isEqualToString:@"status"]) {
                     NSMutableDictionary *snapshot=[reply[@"result"] mutableCopy];

@@ -1,3 +1,6 @@
+import 'history/watch_history.dart';
+import 'history/watch_history_page.dart';
+import 'history/history_playback.dart';
 import 'catalog/watched.dart';
 
 import 'package:freescene_provider_api/freescene_provider_api.dart';
@@ -124,7 +127,7 @@ class _FreeSceneBootstrapState extends State<FreeSceneBootstrap> {
   );
 }
 
-enum _Page { movies, series, games, downloads, settings }
+enum _Page { movies, series, games, downloads, history, settings }
 
 class FreeSceneApp extends StatefulWidget {
   const FreeSceneApp({
@@ -147,7 +150,19 @@ class FreeSceneApp extends StatefulWidget {
   State<FreeSceneApp> createState() => _FreeSceneAppState();
 }
 
-class _FreeSceneAppState extends State<FreeSceneApp> {
+class _FreeSceneAppState extends State<FreeSceneApp>
+    with WidgetsBindingObserver {
+  late final watchHistory = WatchHistoryController(
+    NativeTorrentService.channel,
+  );
+  final historyPage = GlobalKey<WatchHistoryPageState>();
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _page == _Page.history) {
+      watchHistory.refresh();
+    }
+  }
+
   late final watched = WatchedController(NativeTorrentService.channel)..start();
 
   late Preferences _preferences = widget.initialPreferences;
@@ -167,6 +182,7 @@ class _FreeSceneAppState extends State<FreeSceneApp> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     if (widget.nativeService != null) {
       NativeTorrentService.channel.setMethodCallHandler((call) async {
         if (call.method == 'canOfferStartupUpdate') {
@@ -219,6 +235,8 @@ class _FreeSceneAppState extends State<FreeSceneApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    watchHistory.dispose();
     watched.dispose();
     if (widget.nativeService != null) {
       NativeTorrentService.channel.setMethodCallHandler(null);
@@ -258,6 +276,7 @@ class _FreeSceneAppState extends State<FreeSceneApp> {
     _ => null,
   };
   void _selectPage(_Page value, {bool? favoritesOnly, bool? queueOnly}) {
+    if (value == _Page.history) unawaited(watchHistory.refresh());
     _searchDebounce?.cancel();
     var nextFavorites = favoritesOnly ?? _showFavorites;
     var nextQueue = queueOnly ?? _showQueue;
@@ -353,7 +372,13 @@ class _FreeSceneAppState extends State<FreeSceneApp> {
       _catalog!.back();
       return true;
     }
-    if (_page == _Page.settings || _page == _Page.downloads) {
+    if (_page == _Page.history &&
+        historyPage.currentState?.exitSelection() == true) {
+      return true;
+    }
+    if (_page == _Page.settings ||
+        _page == _Page.downloads ||
+        _page == _Page.history) {
       _selectPage(_lastCatalogPage);
       return true;
     }
@@ -449,8 +474,43 @@ class _FreeSceneAppState extends State<FreeSceneApp> {
     return task.videos.where((file) => file.index == index).firstOrNull;
   }
 
-  Future<void> _useCatalogSource(CatalogSource source, bool watch) async {
-    final identity = watchedIdentity(_catalog!.selected, source);
+  Future<void> _playHistory(WatchEntry entry) async {
+    if (entry.data['sourceType'] == 'torrent') {
+      await _torrents!.replayHistory(
+        entry.id,
+        entry.data,
+        identity: entry.watchedIdentity,
+      );
+    } else if (entry.data['sourceType'] == 'download') {
+      await widget.nativeService!.call('openDownloadedVideo', {
+        'filename': entry.subtitle,
+        'directory':
+            entry.data['downloadDirectory'] ??
+            ProviderSetup.current.downloadDirectory ??
+            ProviderSetup.current.downloadProvider?.name,
+        'title': entry.title,
+        'history': entry.data,
+      });
+    } else {
+      final match = await resolveHistorySource(entry, _catalog!.repository);
+      if (!mounted || _page != _Page.history) return;
+      await _useCatalogSource(
+        match.source,
+        true,
+        historyTitle: match.title,
+        replay: entry,
+      );
+    }
+  }
+
+  Future<void> _useCatalogSource(
+    CatalogSource source,
+    bool watch, {
+    CatalogTitle? historyTitle,
+    WatchEntry? replay,
+  }) async {
+    final title = historyTitle ?? _catalog!.selected;
+    final identity = watchedIdentity(title, source);
     final resolved = await _catalog!.repository.resolve(source);
     if (!watch && resolved.row.download == DownloadKind.external) {
       if (resolved.uri == null) {
@@ -486,12 +546,19 @@ class _FreeSceneAppState extends State<FreeSceneApp> {
       }
       await _torrents!.watchProvider(
         identity: identity,
-        url: resolved.uri.toString(),
+        history: sourceWatchHistory(title, resolved, _preferences.english),
+        url: resolved.row.watch == SourceKind.embed
+            ? historyPlaybackUrl(
+                replay,
+                resolved.uri!,
+                resolved.webEpisodes,
+              ).toString()
+            : resolved.uri.toString(),
         title: resolved.row.title,
         provider: resolved.row.provider.name,
         providerName: resolved.row.provider.label,
         kind: resolved.row.watch.name,
-        webPlayer: resolved.webPlayer,
+        webPlayer: replay?.data['webPlayer'] as int? ?? resolved.webPlayer,
         webEpisodes: resolved.webEpisodes.map((e) => e.toJson()).toList(),
       );
       return;
@@ -499,7 +566,11 @@ class _FreeSceneAppState extends State<FreeSceneApp> {
     final id = await importCatalogSource(_torrents!, resolved);
     if (!mounted) return;
     if (watch) {
-      await _torrents!.watch(id, identity: identity);
+      await _torrents!.watch(
+        id,
+        identity: identity,
+        history: sourceWatchHistory(title, resolved, _preferences.english),
+      );
     } else {
       _downloadAdded();
     }
@@ -653,6 +724,11 @@ class _FreeSceneAppState extends State<FreeSceneApp> {
                                   text('Загрузки', 'Downloads'),
                                 ),
                                 (
+                                  _Page.history,
+                                  Icons.history,
+                                  text('История', 'History'),
+                                ),
+                                (
                                   _Page.settings,
                                   Icons.settings_outlined,
                                   text('Настройки', 'Settings'),
@@ -771,6 +847,14 @@ class _FreeSceneAppState extends State<FreeSceneApp> {
                     Expanded(
                       child: _page == _Page.settings
                           ? _settings()
+                          : _page == _Page.history
+                          ? WatchHistoryPage(
+                              key: historyPage,
+                              controller: watchHistory,
+                              english: _preferences.english,
+                              onBack: () => _selectPage(_lastCatalogPage),
+                              onPlay: _playHistory,
+                            )
                           : _page == _Page.downloads && _torrents != null
                           ? DownloadsPage(
                               controller: _torrents!,

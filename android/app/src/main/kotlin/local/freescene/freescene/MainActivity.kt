@@ -6,6 +6,7 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.EventChannel
 import android.app.ActivityManager
 import android.content.Intent
+import org.json.JSONObject
 import org.json.JSONArray
 import android.view.KeyEvent
 
@@ -61,12 +62,17 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "freescene/android")
             .setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "watchHistorySnapshot" -> result.success(WatchHistory(this).snapshot())
+                    "watchHistoryRemove" -> {
+                        val removed = WatchHistory(this).remove(call.argument<List<Any?>>("ids") ?: emptyList<Any?>())
+                        TorrentEngine.syncWatchHistory(this) { value -> value.onSuccess { result.success(mapOf("removed" to removed)) }.onFailure { result.error("history_cache", "Could not remove history cache", null) } }
+                    }
                     "watchedSnapshot" -> result.success(WatchedHistory(this).snapshot())
                     "setWatched" -> { WatchedHistory(this).set(call.argument<String>("watchedSource"), call.argument<String>("watchedTitle"), call.argument<Boolean>("watched") == true); result.success(null) }
                     "sourceProbe" -> SourceProbe.start(this, call, result)
                     "sourceProbeCancel" -> { SourceProbe.cancel(); result.success(null) }
                     "torrentOpen" -> { SourceProbe.cancel(); torrents.call(call, result) }
-                    "torrentAdd", "torrentPlay", "torrentImport" -> if (TvWindow.isTv(this)) torrents.call(call, result)
+                    "torrentAdd", "torrentPlay", "torrentImport", "torrentHistoryPlay" -> if (TvWindow.isTv(this)) torrents.call(call, result)
                         else downloadNotifications.run(result) { torrents.call(call, result) }
                     "torrentCommand" -> if (!TvWindow.isTv(this) && call.argument<Map<String, Any?>>("request")?.get("method") == "resume") {
                         downloadNotifications.run(result) { torrents.call(call, result) }
@@ -91,6 +97,7 @@ class MainActivity : FlutterActivity() {
                             }
                             startActivity(Intent(this, WebPlayerActivity::class.java)
                                 .putExtra("title", call.argument<String>("title"))
+                                .putExtra("history", JSONObject(call.argument<Map<String, Any?>>("history") ?: emptyMap<String, Any?>()).toString())
                                 .putExtra("watchedSource", call.argument<String>("watchedSource"))
                                 .putExtra("watchedTitle", call.argument<String>("watchedTitle"))
                                 .putExtra("series", call.argument<Boolean>("series") ?: false)
@@ -117,6 +124,7 @@ class MainActivity : FlutterActivity() {
                         else {
                             startActivity(Intent(this, PlayerActivity::class.java)
                                 .putExtra("url", url).putExtra("title", call.argument<String>("title"))
+                                .putExtra("history", JSONObject(call.argument<Map<String, Any?>>("history") ?: emptyMap<String, Any?>()).toString())
                                 .putExtra("watchedSource", call.argument<String>("watchedSource"))
                                 .putExtra("watchedTitle", call.argument<String>("watchedTitle"))
                                 .putExtra("series", call.argument<Boolean>("series") ?: false)
