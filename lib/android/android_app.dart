@@ -279,7 +279,11 @@ class _AndroidAppState extends State<AndroidApp> with WidgetsBindingObserver {
     }
   }
 
-  late final sourceChecks = androidSourceChecks(widget.repository);
+  late final sourceChecks = androidSourceChecks(
+    widget.repository,
+    season: () => sourceSeason,
+    episode: () => sourceEpisode,
+  );
 
   void _checksChanged() {
     if (mounted) setState(() {});

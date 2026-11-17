@@ -11,6 +11,13 @@ import org.robolectric.annotation.Config
 @Config(sdk = [28])
 class TorrentEpisodeTest {
     private fun files(vararg names: String) = names.mapIndexed { i, name -> JSONObject().put("name", name).put("index", i) }
+    @Test fun probeNeverSubstitutesFirstEpisodeForRequestedEpisode() {
+        val videos = files("Show.S01E01.mkv", "Show.S01E04.mkv")
+        assertEquals(1, TorrentEpisode.probeIndex(videos, 1, 4))
+        assertNull(TorrentEpisode.probeIndex(videos, 1, 3))
+        assertNull(TorrentEpisode.probeIndex(files("Show.04.mkv"), 1, 4))
+        assertEquals(0, TorrentEpisode.probeIndex(videos, -1, -1))
+    }
     @Test fun selectedSeasonAndEpisodeMatchAcrossASeasonPack() {
         val files = files("Show.S01E01.mkv", "Show.S01E02.mkv", "Show.S02E02.mkv")
         assertEquals(1, TorrentEpisode.index(files, 1, 2))

@@ -25,6 +25,8 @@ object SourceProbe {
         val generation = epoch.get()
         val bytes = call.argument<ByteArray>("bytes")
         val magnet = call.argument<String>("magnet")
+        val season = call.argument<Int>("season") ?: -1
+        val episode = call.argument<Int>("episode") ?: -1
         if ((bytes == null && magnet == null) ||
             (bytes != null && (bytes.size !in 1..16*1024*1024 || bytes[0] != 'd'.code.toByte())) ||
             (magnet != null && !TorrentPolicy.magnet(magnet))) {
@@ -62,7 +64,10 @@ object SourceProbe {
                     val tasks = command(JSONObject().put("method","status")).getJSONArray("tasks")
                     if(tasks.length()>0) {
                         val files = tasks.getJSONObject(0).getJSONArray("files")
-                        for(i in 0 until files.length()) if(files.getJSONObject(i).optBoolean("video")) { file=files.getJSONObject(i).getInt("index"); break }
+                        val videos = (0 until files.length()).map { files.getJSONObject(it) }.filter { it.optBoolean("video") }
+                        file = TorrentEpisode.probeIndex(videos, season, episode) ?: -1
+                        // Do not certify another episode when the requested file is ambiguous.
+                        if (videos.isNotEmpty()) break
                     }
                     if(file>=0) break
                     Thread.sleep(200)

@@ -40,6 +40,8 @@ class SourceChecks {
       stop();
       _title = title;
       _attempted.clear();
+      // Results describe the selected title/episode/quality, not every file in a torrent.
+      sourceCheckResults.value = {};
     }
     if (title == null) return;
     for (final source in sources.where((s) => s.row.isTorrent && s.canWatch)) {

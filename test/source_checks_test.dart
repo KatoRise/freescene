@@ -16,6 +16,28 @@ CatalogSource source(String id) => CatalogSource(
 Future<void> tick() => Future<void>.delayed(Duration.zero);
 void main() {
   setUp(() => sourceCheckResults.value = {});
+  test('same torrent must be checked again after episode changes', () async {
+    var calls = 0;
+    final second = Completer<SourceCheckState>();
+    final controller = SourceChecks(
+      probe: (_) async {
+        calls++;
+        return calls == 1 ? SourceCheckState.data : await second.future;
+      },
+      cancelProbe: () async {},
+    );
+    controller.select('episode1', [source('pack')]);
+    await tick();
+    expect(recentSourceCheck('test:pack')?.state, SourceCheckState.data);
+    controller.select('episode4', [source('pack')]);
+    await tick();
+    expect(calls, 2);
+    expect(recentSourceCheck('test:pack')?.state, SourceCheckState.checking);
+    second.complete(SourceCheckState.timeout);
+    await tick();
+    expect(recentSourceCheck('test:pack')?.state, SourceCheckState.timeout);
+    controller.dispose();
+  });
   test('only three automatic probes, one at a time, cache and retry', () async {
     var calls = 0, active = 0, maximum = 0;
     final controller = SourceChecks(
